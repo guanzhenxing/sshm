@@ -10,3 +10,9 @@ build/
 .mypy_cache/
 .venv/
 venv/
+.coverage
+htmlcov/
+*.log
+.idea/
+.vscode/
+.DS_Store
