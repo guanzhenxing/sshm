@@ -157,11 +157,15 @@ def cmd_password(args):
     """处理 password 命令（修改主密码）。"""
     vault = Vault(args.vault)
     old_password = get_password("Current master password: ")
-    data = vault.load(old_password)
+    try:
+        data = vault.load(old_password)
+    except Exception:
+        print("当前密码错误。")
+        sys.exit(1)
     new_password = get_password("New master password: ")
     confirm = get_password("Confirm new master password: ")
     if new_password != confirm:
-        print("Passwords do not match.")
+        print("两次输入的新密码不一致。")
         sys.exit(1)
     vault.save(data, new_password)
     clear_key()
