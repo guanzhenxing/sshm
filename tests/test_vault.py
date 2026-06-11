@@ -65,3 +65,92 @@ class TestServerConfig:
         assert d["name"] == "test"
         assert d["port"] == 22
         assert isinstance(d, dict)
+
+
+import json
+import os
+import tempfile
+from sshm.vault import Vault
+
+
+class TestVault:
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.vault_path = os.path.join(self.tmpdir, "vault.enc")
+        self.vault = Vault(self.vault_path)
+        self.password = "test-master-password"
+
+    def test_init_creates_vault_file(self):
+        self.vault.init(self.password)
+        assert os.path.exists(self.vault_path)
+
+    def test_init_refuses_if_exists(self):
+        self.vault.init(self.password)
+        with pytest.raises(FileExistsError):
+            self.vault.init(self.password)
+
+    def test_init_force_overwrites(self):
+        self.vault.init(self.password)
+        self.vault.init("new-password", force=True)
+        data = self.vault.load("new-password")
+        assert data["servers"] == []
+
+    def test_load_returns_dict(self):
+        self.vault.init(self.password)
+        data = self.vault.load(self.password)
+        assert data["version"] == 1
+        assert data["servers"] == []
+
+    def test_wrong_password_load_fails(self):
+        self.vault.init(self.password)
+        with pytest.raises(Exception):
+            self.vault.load("wrong-password")
+
+    def test_add_and_list_servers(self):
+        self.vault.init(self.password)
+        server = ServerConfig(name="test", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        self.vault.add_server(server, self.password)
+        servers = self.vault.list_servers(self.password)
+        assert len(servers) == 1
+        assert servers[0].name == "test"
+
+    def test_remove_server_by_name(self):
+        self.vault.init(self.password)
+        s = ServerConfig(name="to-delete", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        self.vault.add_server(s, self.password)
+        self.vault.remove_server("to-delete", self.password)
+        assert len(self.vault.list_servers(self.password)) == 0
+
+    def test_remove_server_by_index(self):
+        self.vault.init(self.password)
+        s = ServerConfig(name="first", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        self.vault.add_server(s, self.password)
+        self.vault.remove_server("1", self.password)
+        assert len(self.vault.list_servers(self.password)) == 0
+
+    def test_remove_nonexistent_raises(self):
+        self.vault.init(self.password)
+        with pytest.raises(ValueError):
+            self.vault.remove_server("nonexistent", self.password)
+
+    def test_edit_server(self):
+        self.vault.init(self.password)
+        s = ServerConfig(name="edit-me", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        self.vault.add_server(s, self.password)
+        self.vault.edit_server("edit-me", {"host": "5.6.7.8", "port": 2222}, self.password)
+        servers = self.vault.list_servers(self.password)
+        assert servers[0].host == "5.6.7.8"
+        assert servers[0].port == 2222
+
+    def test_load_nonexistent_raises(self):
+        with pytest.raises(FileNotFoundError):
+            self.vault.load(self.password)
+
+    def test_vault_file_is_not_plaintext(self):
+        self.vault.init(self.password)
+        s = ServerConfig(name="secret-server", host="10.0.0.1", user="admin", auth_type="password", password="hunter2")
+        self.vault.add_server(s, self.password)
+        with open(self.vault_path, "rb") as f:
+            raw = f.read()
+        assert b"secret-server" not in raw
+        assert b"hunter2" not in raw
