@@ -199,8 +199,18 @@ def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfi
 def run_tui():
     """启动 Textual TUI。"""
     from sshm.tui import SSHManagerApp
-    app = SSHManagerApp()
-    app.run()
+    from sshm.ssh import ssh_connect
+
+    parser = build_parser()
+    args, _ = parser.parse_known_args()
+    vault_path = getattr(args, "vault", "~/.sshm/vault.enc")
+
+    app = SSHManagerApp(vault_path=vault_path)
+    result = app.run()
+
+    # 如果 TUI 返回了 ServerConfig，说明用户选择连接
+    if isinstance(result, ServerConfig):
+        sys.exit(ssh_connect(result))
 
 
 def build_parser() -> argparse.ArgumentParser:
