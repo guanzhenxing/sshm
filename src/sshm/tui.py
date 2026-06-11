@@ -1,15 +1,73 @@
 """交互式 TUI — 基于 Textual。"""
 
-import getpass
 import sys
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, Horizontal
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.containers import Vertical, Horizontal, Center
+from textual.widgets import DataTable, Footer, Header, Input, Static, Label
 
 from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key, clear_key
+
+
+class PasswordScreen(Vertical):
+    """密码输入界面。"""
+
+    DEFAULT_CSS = """
+    PasswordScreen {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    PasswordScreen Vertical {
+        width: 60;
+        height: auto;
+        padding: 2 4;
+        border: thick $accent;
+    }
+    PasswordScreen Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    PasswordScreen #password-input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    PasswordScreen #error-label {
+        color: $error;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, retry: bool = False):
+        super().__init__()
+        self.retry = retry
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("sshm — SSH Server Manager" if not self.retry else "密码错误，请重试")
+            yield Input(
+                placeholder="输入主密码",
+                password=True,
+                id="password-input",
+            )
+            yield Label("", id="error-label")
+
+    def on_mount(self) -> None:
+        self.query_one("#password-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "password-input":
+            password = event.value
+            if not password:
+                self.query_one("#error-label", Label).update("密码不能为空")
+                return
+            # 通知父 App 尝试认证
+            app = self.app
+            if isinstance(app, SSHManagerApp):
+                app.do_authenticate(password)
 
 
 class SSHManagerApp(App):
@@ -32,6 +90,9 @@ class SSHManagerApp(App):
     #main-table {
         height: 1fr;
     }
+    #main-view {
+        height: 1fr;
+    }
     """
 
     BINDINGS = [
@@ -51,10 +112,11 @@ class SSHManagerApp(App):
         self.vault = Vault(vault_path)
         self.password = ""
         self.servers: list[ServerConfig] = []
+        self._authenticated = False
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical():
+        with Vertical(id="main-view"):
             with Horizontal(id="search-bar"):
                 yield Input(placeholder="搜索 (/)", id="search-input")
             yield DataTable(id="main-table")
@@ -65,35 +127,61 @@ class SSHManagerApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        """启动时加载 vault 数据。"""
+        """启动时检查缓存或显示密码输入。"""
         self._setup_table()
-        self._authenticate_and_load()
+        self._hide_main_content()
+
+        # 先尝试从 Keychain 缓存读取
+        cached = load_key()
+        if cached:
+            self.do_authenticate(cached)
+        else:
+            self._show_password_screen()
+
+    def _hide_main_content(self) -> None:
+        """隐藏主内容区域。"""
+        main_view = self.query_one("#main-view")
+        main_view.display = False
+
+    def _show_main_content(self) -> None:
+        """显示主内容区域。"""
+        main_view = self.query_one("#main-view")
+        main_view.display = True
+
+    def _show_password_screen(self, retry: bool = False) -> None:
+        """显示密码输入界面。"""
+        # 移除已有的密码界面
+        try:
+            self.query_one("PasswordScreen").remove()
+        except Exception:
+            pass
+        self._hide_main_content()
+        self.mount(PasswordScreen(retry=retry))
+
+    def do_authenticate(self, password: str) -> None:
+        """尝试用给定密码认证。"""
+        try:
+            self.servers = self.vault.list_servers(password)
+            self.password = password
+            self._authenticated = True
+        except Exception:
+            self._authenticated = False
+            self._show_password_screen(retry=True)
+            return
+
+        # 认证成功：移除密码界面，显示主内容
+        try:
+            self.query_one("PasswordScreen").remove()
+        except Exception:
+            pass
+        self._show_main_content()
+        self._refresh_table()
 
     def _setup_table(self) -> None:
         """配置表格列。"""
         table = self.query_one("#main-table", DataTable)
         table.cursor_type = "row"
         table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
-
-    def _authenticate_and_load(self) -> None:
-        """认证并加载服务器列表。"""
-        cached = load_key()
-        if cached:
-            self.password = cached
-        else:
-            self.password = getpass.getpass("Master password: ")
-
-        try:
-            self.servers = self.vault.list_servers(self.password)
-        except Exception:
-            self.password = getpass.getpass("Master password (retry): ")
-            try:
-                self.servers = self.vault.list_servers(self.password)
-            except Exception as e:
-                self.exit(message=f"Authentication failed: {e}")
-                return
-
-        self._refresh_table()
 
     def _refresh_table(self, filter_text: str = "") -> None:
         """刷新表格显示。"""
@@ -126,6 +214,8 @@ class SSHManagerApp(App):
 
     def action_focus_search(self) -> None:
         """聚焦搜索框。"""
+        if not self._authenticated:
+            return
         search = self.query_one("#search-input", Input)
         search.focus()
 
