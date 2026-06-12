@@ -11,54 +11,34 @@ from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key, clear_key
 
 
-# ── 通用弹窗样式 ────────────────────────────────────
-
-_DIALOG_CSS = """
-    align: center middle;
-    height: 100%;
-    width: 100%;
-}
-%s Vertical {
-    width: 60;
-    max-height: 80vh;
-    padding: 1 4;
-    border: thick $accent;
-    overflow-y: auto;
-}
-%s Label {
-    width: 100%;
-    text-align: center;
-    margin-bottom: 1;
-}
-%s Input {
-    width: 100%;
-    margin-bottom: 1;
-}
-%s #error-label {
-    color: $error;
-    text-align: center;
-    margin-bottom: 1;
-}
-%s Horizontal {
-    width: 100%;
-    height: auto;
-    margin-top: 1;
-}
-%s Button {
-    margin: 0 2;
-}
-""" % tuple(["%s"] * 7)
-
-
 # ── 密码输入界面 ──────────────────────────────────────
 
 class PasswordScreen(Vertical):
 
-    DEFAULT_CSS = (_DIALOG_CSS % "PasswordScreen") + """
+    DEFAULT_CSS = """
     PasswordScreen {
         align: center middle;
         height: 100%;
         width: 100%;
+    }
+    PasswordScreen Vertical {
+        width: 60;
+        height: auto;
+        padding: 2 4;
+        border: thick $accent;
+    }
+    PasswordScreen Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    PasswordScreen #password-input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    PasswordScreen #error-label {
+        color: $error;
+        text-align: center;
     }
     """
 
@@ -90,7 +70,42 @@ class PasswordScreen(Vertical):
 
 class ServerForm(Vertical):
 
-    DEFAULT_CSS = _DIALOG_CSS % "ServerForm"
+    DEFAULT_CSS = """
+    ServerForm {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    ServerForm Vertical {
+        width: 70;
+        max-height: 80vh;
+        padding: 1 4;
+        border: thick $accent;
+        overflow-y: auto;
+    }
+    ServerForm Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ServerForm Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ServerForm #error-label {
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ServerForm Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+    ServerForm Button {
+        margin: 0 2;
+    }
+    """
 
     def __init__(self, server: ServerConfig | None = None):
         super().__init__()
@@ -192,7 +207,42 @@ class ServerForm(Vertical):
 class TransferForm(Vertical):
     """上传/下载文件路径输入表单。"""
 
-    DEFAULT_CSS = _DIALOG_CSS % "TransferForm"
+    DEFAULT_CSS = """
+    TransferForm {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    TransferForm Vertical {
+        width: 60;
+        max-height: 80vh;
+        padding: 1 4;
+        border: thick $accent;
+        overflow-y: auto;
+    }
+    TransferForm Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    TransferForm Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    TransferForm #error-label {
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    TransferForm Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+    TransferForm Button {
+        margin: 0 2;
+    }
+    """
 
     def __init__(self, server: ServerConfig, mode: str):
         super().__init__()
