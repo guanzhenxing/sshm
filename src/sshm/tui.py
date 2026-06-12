@@ -4,8 +4,8 @@ import sys
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, Horizontal, Center
-from textual.widgets import DataTable, Footer, Header, Input, Static, Label
+from textual.containers import Vertical, Horizontal
+from textual.widgets import DataTable, Footer, Header, Input, Static, Label, Button
 
 from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key, clear_key
@@ -64,10 +64,173 @@ class PasswordScreen(Vertical):
             if not password:
                 self.query_one("#error-label", Label).update("密码不能为空")
                 return
-            # 通知父 App 尝试认证
             app = self.app
             if isinstance(app, SSHManagerApp):
                 app.do_authenticate(password)
+
+
+class ServerForm(Vertical):
+    """添加/编辑服务器表单。"""
+
+    DEFAULT_CSS = """
+    ServerForm {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    ServerForm Vertical {
+        width: 70;
+        height: auto;
+        padding: 1 4;
+        border: thick $accent;
+    }
+    ServerForm Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ServerForm Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ServerForm #form-error {
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ServerForm Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+    ServerForm Button {
+        margin: 0 2;
+    }
+    """
+
+    def __init__(self, server: ServerConfig | None = None):
+        super().__init__()
+        self.server = server  # None = 添加模式，有值 = 编辑模式
+
+    def compose(self) -> ComposeResult:
+        title = "编辑服务器" if self.server else "添加服务器"
+        s = self.server
+
+        with Vertical():
+            yield Label(title, id="form-title")
+            yield Input(
+                value=s.name if s else "",
+                placeholder="名称 (必填)",
+                id="f-name",
+            )
+            yield Input(
+                value=s.host if s else "",
+                placeholder="地址 (必填，IP 或域名)",
+                id="f-host",
+            )
+            yield Input(
+                value=str(s.port) if s and s.port != 22 else "",
+                placeholder="端口 (默认 22)",
+                id="f-port",
+            )
+            yield Input(
+                value=s.user if s else "",
+                placeholder="用户名 (必填)",
+                id="f-user",
+            )
+            yield Input(
+                value=s.auth_type if s else "",
+                placeholder="认证方式 (key 或 password)",
+                id="f-auth",
+            )
+            yield Input(
+                value=s.key_path if s and s.key_path else "",
+                placeholder="密钥路径 (认证方式为 key 时必填)",
+                id="f-keypath",
+            )
+            yield Input(
+                value="***" if s and s.password else "",
+                placeholder="密码 (认证方式为 password 时必填)",
+                password=True,
+                id="f-password",
+            )
+            yield Input(
+                value=s.group if s and s.group else "",
+                placeholder="分组 (可选)",
+                id="f-group",
+            )
+            yield Input(
+                value=s.notes if s and s.notes else "",
+                placeholder="备注 (可选)",
+                id="f-notes",
+            )
+            yield Label("", id="form-error")
+            with Horizontal():
+                yield Button("保存", variant="success", id="btn-save")
+                yield Button("取消", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#f-name", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self._close()
+        elif event.button.id == "btn-save":
+            self._save()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """任意输入框按回车都触发保存。"""
+        self._save()
+
+    def _save(self) -> None:
+        name = self.query_one("#f-name", Input).value.strip()
+        host = self.query_one("#f-host", Input).value.strip()
+        port_str = self.query_one("#f-port", Input).value.strip()
+        user = self.query_one("#f-user", Input).value.strip()
+        auth_type = self.query_one("#f-auth", Input).value.strip()
+        key_path = self.query_one("#f-keypath", Input).value.strip()
+        password = self.query_one("#f-password", Input).value.strip()
+        group = self.query_one("#f-group", Input).value.strip()
+        notes = self.query_one("#f-notes", Input).value.strip()
+
+        # 编辑模式下密码字段显示 *** 表示未修改，跳过
+        if self.server and password == "***":
+            password = self.server.password or ""
+
+        port = int(port_str) if port_str else 22
+
+        # 验证
+        if not name:
+            self.query_one("#form-error", Label).update("名称不能为空")
+            return
+        if not host:
+            self.query_one("#form-error", Label).update("地址不能为空")
+            return
+        if not user:
+            self.query_one("#form-error", Label).update("用户名不能为空")
+            return
+        if auth_type not in ("key", "password"):
+            self.query_one("#form-error", Label).update("认证方式必须是 key 或 password")
+            return
+
+        try:
+            cfg = ServerConfig(
+                name=name, host=host, port=port, user=user,
+                auth_type=auth_type, key_path=key_path or None,
+                password=password or None, group=group, notes=notes,
+            )
+        except ValueError as e:
+            self.query_one("#form-error", Label).update(str(e))
+            return
+
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.do_save_server(cfg, self.server)
+
+    def _close(self) -> None:
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.close_form()
 
 
 class SSHManagerApp(App):
@@ -131,26 +294,21 @@ class SSHManagerApp(App):
         self._setup_table()
         self._hide_main_content()
 
-        # 先尝试从 Keychain 缓存读取
         cached = load_key()
         if cached:
             self.do_authenticate(cached)
         else:
             self._show_password_screen()
 
+    # ── 界面切换 ──────────────────────────────────
+
     def _hide_main_content(self) -> None:
-        """隐藏主内容区域。"""
-        main_view = self.query_one("#main-view")
-        main_view.display = False
+        self.query_one("#main-view").display = False
 
     def _show_main_content(self) -> None:
-        """显示主内容区域。"""
-        main_view = self.query_one("#main-view")
-        main_view.display = True
+        self.query_one("#main-view").display = True
 
     def _show_password_screen(self, retry: bool = False) -> None:
-        """显示密码输入界面。"""
-        # 移除已有的密码界面
         try:
             self.query_one("PasswordScreen").remove()
         except Exception:
@@ -158,8 +316,22 @@ class SSHManagerApp(App):
         self._hide_main_content()
         self.mount(PasswordScreen(retry=retry))
 
+    def _show_server_form(self, server: ServerConfig | None = None) -> None:
+        self._hide_main_content()
+        self.mount(ServerForm(server=server))
+
+    def close_form(self) -> None:
+        """关闭表单，返回主界面。"""
+        try:
+            self.query_one("ServerForm").remove()
+        except Exception:
+            pass
+        self._show_main_content()
+        self._refresh_table()
+
+    # ── 认证 ──────────────────────────────────────
+
     def do_authenticate(self, password: str) -> None:
-        """尝试用给定密码认证。"""
         try:
             self.servers = self.vault.list_servers(password)
             self.password = password
@@ -169,7 +341,6 @@ class SSHManagerApp(App):
             self._show_password_screen(retry=True)
             return
 
-        # 认证成功：移除密码界面，显示主内容
         try:
             self.query_one("PasswordScreen").remove()
         except Exception:
@@ -177,14 +348,31 @@ class SSHManagerApp(App):
         self._show_main_content()
         self._refresh_table()
 
+    # ── 服务器 CRUD ───────────────────────────────
+
+    def do_save_server(self, cfg: ServerConfig, original: ServerConfig | None) -> None:
+        """保存服务器（添加或编辑）。"""
+        try:
+            if original:
+                # 编辑模式：先删除旧配置再添加新的（处理 name 变更）
+                self.vault.remove_server(original.name, self.password)
+            self.vault.add_server(cfg, self.password)
+            self.servers = self.vault.list_servers(self.password)
+            self.close_form()
+        except Exception as e:
+            try:
+                self.query_one("#form-error", Label).update(f"保存失败: {e}")
+            except Exception:
+                pass
+
+    # ── 表格 ──────────────────────────────────────
+
     def _setup_table(self) -> None:
-        """配置表格列。"""
         table = self.query_one("#main-table", DataTable)
         table.cursor_type = "row"
         table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
 
     def _refresh_table(self, filter_text: str = "") -> None:
-        """刷新表格显示。"""
         table = self.query_one("#main-table", DataTable)
         table.clear()
 
@@ -198,7 +386,7 @@ class SSHManagerApp(App):
 
         if not filtered:
             if not self.servers:
-                table.add_row("", "(empty — use 'sshm add' to add your first server)", "", "", "", "")
+                table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
             else:
                 table.add_row("", "(no match)", "", "", "", "")
             return
@@ -207,27 +395,24 @@ class SSHManagerApp(App):
             auth_label = "key" if s.auth_type == "key" else "pwd"
             table.add_row(str(i), s.name, s.host, s.user, auth_label, s.group)
 
+    # ── 事件处理 ──────────────────────────────────
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        """搜索输入变化时过滤表格。"""
         if event.input.id == "search-input":
             self._refresh_table(event.value)
 
+    # ── Actions ───────────────────────────────────
+
     def action_focus_search(self) -> None:
-        """聚焦搜索框。"""
         if not self._authenticated:
             return
-        search = self.query_one("#search-input", Input)
-        search.focus()
+        self.query_one("#search-input", Input).focus()
 
     def action_unfocus_search(self) -> None:
-        """取消搜索，清空搜索框。"""
-        search = self.query_one("#search-input", Input)
-        search.value = ""
-        table = self.query_one("#main-table", DataTable)
-        table.focus()
+        self.query_one("#search-input", Input).value = ""
+        self.query_one("#main-table", DataTable).focus()
 
     def _get_selected_server(self) -> ServerConfig | None:
-        """获取当前选中的服务器。"""
         table = self.query_one("#main-table", DataTable)
         row = table.cursor_row
         if row is None or row >= len(self.servers):
@@ -235,25 +420,27 @@ class SSHManagerApp(App):
         return self.servers[row]
 
     def action_connect_server(self) -> None:
-        """连接到选中的服务器。"""
         server = self._get_selected_server()
         if not server:
             return
         self.exit(result=server)
 
     def action_add_server(self) -> None:
-        """添加服务器。"""
-        self.exit(message="Use 'sshm add' to add a new server.")
+        if not self._authenticated:
+            return
+        self._show_server_form(server=None)
 
     def action_edit_server(self) -> None:
-        """编辑选中的服务器。"""
+        if not self._authenticated:
+            return
         server = self._get_selected_server()
         if not server:
             return
-        self.exit(message=f"Use 'sshm edit {server.name}' to edit this server.")
+        self._show_server_form(server=server)
 
     def action_delete_server(self) -> None:
-        """删除选中的服务器。"""
+        if not self._authenticated:
+            return
         server = self._get_selected_server()
         if not server:
             return
@@ -265,14 +452,12 @@ class SSHManagerApp(App):
             self.exit(message=f"Delete failed: {e}")
 
     def action_upload_file(self) -> None:
-        """上传文件。"""
         server = self._get_selected_server()
         if not server:
             return
         self.exit(message=f"Use 'sshm upload {server.name} <local> <remote>' to upload.")
 
     def action_download_file(self) -> None:
-        """下载文件。"""
         server = self._get_selected_server()
         if not server:
             return
