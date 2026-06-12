@@ -4,12 +4,15 @@ import os
 import pty
 import select
 import signal
+import subprocess
 import sys
 import termios
 import time
 import tty
 
 from sshm.vault import ServerConfig
+
+CONNECT_TIMEOUT = 10
 
 
 def ssh_connect(server: ServerConfig) -> int:
@@ -22,12 +25,21 @@ def ssh_connect(server: ServerConfig) -> int:
 
 def _ssh_with_key(server: ServerConfig) -> int:
     """密钥认证 SSH 连接。"""
-    cmd = ["ssh", "-o", f"Port={server.port}"]
+    cmd = [
+        "ssh",
+        "-o", f"Port={server.port}",
+        "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
+    ]
     if server.key_path:
         cmd.extend(["-i", server.key_path])
     cmd.append(f"{server.user}@{server.host}")
-    os.execvp("ssh", cmd)
-    return 1  # 不会到达
+
+    print(f"Connecting to {server.user}@{server.host}:{server.port} ...")
+    sys.stdout.flush()
+
+    # 用 subprocess 而非 os.execvp，确保终端状态可控
+    result = subprocess.run(cmd)
+    return result.returncode
 
 
 def _ssh_with_password(server: ServerConfig) -> int:
@@ -35,7 +47,9 @@ def _ssh_with_password(server: ServerConfig) -> int:
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp("ssh", [
-            "ssh", "-o", f"Port={server.port}",
+            "ssh",
+            "-o", f"Port={server.port}",
+            "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
             f"{server.user}@{server.host}",
         ])
         os._exit(1)
@@ -44,6 +58,7 @@ def _ssh_with_password(server: ServerConfig) -> int:
     authenticated = False
     banner = b""
 
+    # 确保终端属性可获取
     try:
         old_attrs = termios.tcgetattr(sys.stdin)
     except termios.error:
@@ -121,7 +136,10 @@ def _ssh_with_password(server: ServerConfig) -> int:
                     break
                 os.write(fd, key)
 
-    except (TimeoutError, PermissionError):
+    except (TimeoutError, PermissionError) as e:
+        # 确保错误信息可见
+        sys.stdout.buffer.write(f"\r\n{e}\r\n".encode())
+        sys.stdout.buffer.flush()
         os.waitpid(pid, os.WNOHANG)
         return 1
     finally:
@@ -130,6 +148,19 @@ def _ssh_with_password(server: ServerConfig) -> int:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
             except termios.error:
                 pass
+        # 兜底：确保终端恢复正常
+        _restore_terminal()
 
     _, status = os.waitpid(pid, 0)
     return status
+
+
+def _restore_terminal() -> None:
+    """确保终端恢复正常模式（兜底）。"""
+    try:
+        attrs = termios.tcgetattr(sys.stdin)
+        attrs[3] |= termios.ECHO | termios.ICANON
+        attrs[3] &= ~termios.OPOST
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, attrs)
+    except Exception:
+        pass

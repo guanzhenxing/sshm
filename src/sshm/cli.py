@@ -4,6 +4,7 @@ import argparse
 import getpass
 import os
 import sys
+import time
 
 from sshm.vault import Vault, ServerConfig
 from sshm.session import store_key, load_key, clear_key
@@ -202,6 +203,7 @@ def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfi
 
 def run_tui():
     """启动 Textual TUI。"""
+    import termios
     from sshm.tui import SSHManagerApp
     from sshm.ssh import ssh_connect
 
@@ -214,6 +216,17 @@ def run_tui():
 
     # 如果 TUI 返回了 ServerConfig，说明用户选择连接
     if isinstance(result, ServerConfig):
+        # 确保终端在 Textual 之后恢复正常
+        try:
+            fd = sys.stdin.fileno()
+            attrs = termios.tcgetattr(fd)
+            attrs[3] |= termios.ECHO | termios.ICANON
+            termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+        except Exception:
+            pass
+        # 给终端一点时间刷新
+        sys.stdout.flush()
+        time.sleep(0.05)
         sys.exit(ssh_connect(result))
 
 
