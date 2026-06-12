@@ -11,33 +11,54 @@ from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key, clear_key
 
 
-class PasswordScreen(Vertical):
-    """密码输入界面。"""
+# ── 通用弹窗样式 ────────────────────────────────────
 
-    DEFAULT_CSS = """
+_DIALOG_CSS = """
+    align: center middle;
+    height: 100%;
+    width: 100%;
+}
+%s Vertical {
+    width: 60;
+    max-height: 80vh;
+    padding: 1 4;
+    border: thick $accent;
+    overflow-y: auto;
+}
+%s Label {
+    width: 100%;
+    text-align: center;
+    margin-bottom: 1;
+}
+%s Input {
+    width: 100%;
+    margin-bottom: 1;
+}
+%s #error-label {
+    color: $error;
+    text-align: center;
+    margin-bottom: 1;
+}
+%s Horizontal {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+}
+%s Button {
+    margin: 0 2;
+}
+""" % tuple(["%s"] * 7)
+
+
+# ── 密码输入界面 ──────────────────────────────────────
+
+class PasswordScreen(Vertical):
+
+    DEFAULT_CSS = (_DIALOG_CSS % "PasswordScreen") + """
     PasswordScreen {
         align: center middle;
         height: 100%;
         width: 100%;
-    }
-    PasswordScreen Vertical {
-        width: 60;
-        height: auto;
-        padding: 2 4;
-        border: thick $accent;
-    }
-    PasswordScreen Label {
-        width: 100%;
-        text-align: center;
-        margin-bottom: 1;
-    }
-    PasswordScreen #password-input {
-        width: 100%;
-        margin-bottom: 1;
-    }
-    PasswordScreen #error-label {
-        color: $error;
-        text-align: center;
     }
     """
 
@@ -48,11 +69,7 @@ class PasswordScreen(Vertical):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("sshm — SSH Server Manager" if not self.retry else "密码错误，请重试")
-            yield Input(
-                placeholder="输入主密码",
-                password=True,
-                id="password-input",
-            )
+            yield Input(placeholder="输入主密码", password=True, id="password-input")
             yield Label("", id="error-label")
 
     def on_mount(self) -> None:
@@ -69,49 +86,15 @@ class PasswordScreen(Vertical):
                 app.do_authenticate(password)
 
 
-class ServerForm(Vertical):
-    """添加/编辑服务器表单。"""
+# ── 服务器添加/编辑表单 ────────────────────────────────
 
-    DEFAULT_CSS = """
-    ServerForm {
-        align: center middle;
-        height: 100%;
-        width: 100%;
-    }
-    ServerForm Vertical {
-        width: 70;
-        max-height: 80vh;
-        padding: 1 4;
-        border: thick $accent;
-        overflow-y: auto;
-    }
-    ServerForm Label {
-        width: 100%;
-        text-align: center;
-        margin-bottom: 1;
-    }
-    ServerForm Input {
-        width: 100%;
-        margin-bottom: 1;
-    }
-    ServerForm #form-error {
-        color: $error;
-        text-align: center;
-        margin-bottom: 1;
-    }
-    ServerForm Horizontal {
-        width: 100%;
-        height: auto;
-        margin-top: 1;
-    }
-    ServerForm Button {
-        margin: 0 2;
-    }
-    """
+class ServerForm(Vertical):
+
+    DEFAULT_CSS = _DIALOG_CSS % "ServerForm"
 
     def __init__(self, server: ServerConfig | None = None):
         super().__init__()
-        self.server = server  # None = 添加模式，有值 = 编辑模式
+        self.server = server
 
     def compose(self) -> ComposeResult:
         title = "编辑服务器" if self.server else "添加服务器"
@@ -119,53 +102,16 @@ class ServerForm(Vertical):
 
         with Vertical():
             yield Label(title, id="form-title")
-            yield Input(
-                value=s.name if s else "",
-                placeholder="名称 (必填)",
-                id="f-name",
-            )
-            yield Input(
-                value=s.host if s else "",
-                placeholder="地址 (必填，IP 或域名)",
-                id="f-host",
-            )
-            yield Input(
-                value=str(s.port) if s and s.port != 22 else "",
-                placeholder="端口 (默认 22)",
-                id="f-port",
-            )
-            yield Input(
-                value=s.user if s else "",
-                placeholder="用户名 (必填)",
-                id="f-user",
-            )
-            yield Input(
-                value=s.auth_type if s else "",
-                placeholder="认证方式 (key 或 password)",
-                id="f-auth",
-            )
-            yield Input(
-                value=s.key_path if s and s.key_path else "",
-                placeholder="密钥路径 (认证方式为 key 时必填)",
-                id="f-keypath",
-            )
-            yield Input(
-                value="***" if s and s.password else "",
-                placeholder="密码 (认证方式为 password 时必填)",
-                password=True,
-                id="f-password",
-            )
-            yield Input(
-                value=s.group if s and s.group else "",
-                placeholder="分组 (可选)",
-                id="f-group",
-            )
-            yield Input(
-                value=s.notes if s and s.notes else "",
-                placeholder="备注 (可选)",
-                id="f-notes",
-            )
-            yield Label("", id="form-error")
+            yield Input(value=s.name if s else "", placeholder="名称 (必填)", id="f-name")
+            yield Input(value=s.host if s else "", placeholder="地址 (必填，IP 或域名)", id="f-host")
+            yield Input(value=str(s.port) if s and s.port != 22 else "", placeholder="端口 (默认 22)", id="f-port")
+            yield Input(value=s.user if s else "", placeholder="用户名 (必填)", id="f-user")
+            yield Input(value=s.auth_type if s else "", placeholder="认证方式 (key 或 password)", id="f-auth")
+            yield Input(value=s.key_path if s and s.key_path else "", placeholder="密钥路径 (认证方式为 key 时必填)", id="f-keypath")
+            yield Input(value="***" if s and s.password else "", placeholder="密码 (认证方式为 password 时必填)", password=True, id="f-password")
+            yield Input(value=s.group if s and s.group else "", placeholder="分组 (可选)", id="f-group")
+            yield Input(value=s.notes if s and s.notes else "", placeholder="备注 (可选)", id="f-notes")
+            yield Label("", id="error-label")
             with Horizontal():
                 yield Button("保存", variant="success", id="btn-save")
                 yield Button("取消", variant="default", id="btn-cancel")
@@ -180,7 +126,6 @@ class ServerForm(Vertical):
             self._save()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Enter 键跳到下一个字段，最后一个字段触发保存。"""
         field_ids = [
             "f-name", "f-host", "f-port", "f-user",
             "f-auth", "f-keypath", "f-password", "f-group", "f-notes",
@@ -189,10 +134,8 @@ class ServerForm(Vertical):
         if current_id in field_ids:
             idx = field_ids.index(current_id)
             if idx < len(field_ids) - 1:
-                # 跳到下一个字段
                 self.query_one(f"#{field_ids[idx + 1]}", Input).focus()
                 return
-        # 最后一个字段按 Enter → 保存
         self._save()
 
     def _save(self) -> None:
@@ -206,24 +149,22 @@ class ServerForm(Vertical):
         group = self.query_one("#f-group", Input).value.strip()
         notes = self.query_one("#f-notes", Input).value.strip()
 
-        # 编辑模式下密码字段显示 *** 表示未修改，跳过
         if self.server and password == "***":
             password = self.server.password or ""
 
         port = int(port_str) if port_str else 22
 
-        # 验证
         if not name:
-            self.query_one("#form-error", Label).update("名称不能为空")
+            self.query_one("#error-label", Label).update("名称不能为空")
             return
         if not host:
-            self.query_one("#form-error", Label).update("地址不能为空")
+            self.query_one("#error-label", Label).update("地址不能为空")
             return
         if not user:
-            self.query_one("#form-error", Label).update("用户名不能为空")
+            self.query_one("#error-label", Label).update("用户名不能为空")
             return
         if auth_type not in ("key", "password"):
-            self.query_one("#form-error", Label).update("认证方式必须是 key 或 password")
+            self.query_one("#error-label", Label).update("认证方式必须是 key 或 password")
             return
 
         try:
@@ -233,7 +174,7 @@ class ServerForm(Vertical):
                 password=password or None, group=group, notes=notes,
             )
         except ValueError as e:
-            self.query_one("#form-error", Label).update(str(e))
+            self.query_one("#error-label", Label).update(str(e))
             return
 
         app = self.app
@@ -245,6 +186,75 @@ class ServerForm(Vertical):
         if isinstance(app, SSHManagerApp):
             app.close_form()
 
+
+# ── 文件传输表单 ──────────────────────────────────────
+
+class TransferForm(Vertical):
+    """上传/下载文件路径输入表单。"""
+
+    DEFAULT_CSS = _DIALOG_CSS % "TransferForm"
+
+    def __init__(self, server: ServerConfig, mode: str):
+        super().__init__()
+        self.server = server
+        self.mode = mode  # "upload" 或 "download"
+
+    def compose(self) -> ComposeResult:
+        if self.mode == "upload":
+            title = f"上传文件 → {self.server.name}"
+            local_ph = "本地文件路径 (如 ./file.txt)"
+            remote_ph = f"远程路径 (如 /home/{self.server.user}/file.txt)"
+        else:
+            title = f"下载文件 ← {self.server.name}"
+            remote_ph = "远程文件路径 (如 /var/log/syslog)"
+            local_ph = "本地保存路径 (如 ./syslog)"
+
+        with Vertical():
+            yield Label(title, id="form-title")
+            yield Input(placeholder=local_ph, id="tf-local")
+            yield Input(placeholder=remote_ph, id="tf-remote")
+            yield Label("", id="error-label")
+            with Horizontal():
+                yield Button("开始传输", variant="success", id="btn-transfer")
+                yield Button("取消", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#tf-local", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self._close()
+        elif event.button.id == "btn-transfer":
+            self._start()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "tf-local":
+            self.query_one("#tf-remote", Input).focus()
+        elif event.input.id == "tf-remote":
+            self._start()
+
+    def _start(self) -> None:
+        local = self.query_one("#tf-local", Input).value.strip()
+        remote = self.query_one("#tf-remote", Input).value.strip()
+
+        if not local:
+            self.query_one("#error-label", Label).update("本地路径不能为空")
+            return
+        if not remote:
+            self.query_one("#error-label", Label).update("远程路径不能为空")
+            return
+
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.do_transfer(self.server, self.mode, local, remote)
+
+    def _close(self) -> None:
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.close_form()
+
+
+# ── 主应用 ─────────────────────────────────────────────
 
 class SSHManagerApp(App):
     """sshm 交互式服务器管理界面。"""
@@ -303,7 +313,6 @@ class SSHManagerApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        """启动时检查缓存或显示密码输入。"""
         self._setup_table()
         self._hide_main_content()
 
@@ -333,12 +342,18 @@ class SSHManagerApp(App):
         self._hide_main_content()
         self.mount(ServerForm(server=server))
 
+    def _show_transfer_form(self, server: ServerConfig, mode: str) -> None:
+        self._hide_main_content()
+        self.mount(TransferForm(server=server, mode=mode))
+
     def close_form(self) -> None:
-        """关闭表单，返回主界面。"""
-        try:
-            self.query_one("ServerForm").remove()
-        except Exception:
-            pass
+        """关闭当前弹出的表单，返回主界面。"""
+        for cls in (ServerForm, TransferForm, PasswordScreen):
+            try:
+                self.query_one(cls).remove()
+                break
+            except Exception:
+                continue
         self._show_main_content()
         self._refresh_table()
 
@@ -364,19 +379,23 @@ class SSHManagerApp(App):
     # ── 服务器 CRUD ───────────────────────────────
 
     def do_save_server(self, cfg: ServerConfig, original: ServerConfig | None) -> None:
-        """保存服务器（添加或编辑）。"""
         try:
             if original:
-                # 编辑模式：先删除旧配置再添加新的（处理 name 变更）
                 self.vault.remove_server(original.name, self.password)
             self.vault.add_server(cfg, self.password)
             self.servers = self.vault.list_servers(self.password)
             self.close_form()
         except Exception as e:
             try:
-                self.query_one("#form-error", Label).update(f"保存失败: {e}")
+                self.query_one("#error-label", Label).update(f"保存失败: {e}")
             except Exception:
                 pass
+
+    # ── 文件传输 ──────────────────────────────────
+
+    def do_transfer(self, server: ServerConfig, mode: str, local: str, remote: str) -> None:
+        """退出 TUI 并执行文件传输。"""
+        self.exit(result=("transfer", server, mode, local, remote))
 
     # ── 表格 ──────────────────────────────────────
 
@@ -465,13 +484,17 @@ class SSHManagerApp(App):
             self.exit(message=f"Delete failed: {e}")
 
     def action_upload_file(self) -> None:
+        if not self._authenticated:
+            return
         server = self._get_selected_server()
         if not server:
             return
-        self.exit(message=f"Use 'sshm upload {server.name} <local> <remote>' to upload.")
+        self._show_transfer_form(server, mode="upload")
 
     def action_download_file(self) -> None:
+        if not self._authenticated:
+            return
         server = self._get_selected_server()
         if not server:
             return
-        self.exit(message=f"Use 'sshm download {server.name} <remote> <local>' to download.")
+        self._show_transfer_form(server, mode="download")

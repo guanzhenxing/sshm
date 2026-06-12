@@ -206,6 +206,7 @@ def run_tui():
     import termios
     from sshm.tui import SSHManagerApp
     from sshm.ssh import ssh_connect
+    from sshm.transfer import scp_upload, scp_download
 
     parser = build_parser()
     args, _ = parser.parse_known_args()
@@ -214,19 +215,26 @@ def run_tui():
     app = SSHManagerApp(vault_path=vault_path)
     result = app.run()
 
+    # 确保终端恢复
+    try:
+        fd = sys.stdin.fileno()
+        attrs = termios.tcgetattr(fd)
+        attrs[3] |= termios.ECHO | termios.ICANON
+        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+    except Exception:
+        pass
+    sys.stdout.flush()
+    time.sleep(0.05)
+
     if isinstance(result, ServerConfig):
-        # 确保终端在 Textual 之后恢复正常
-        try:
-            fd = sys.stdin.fileno()
-            attrs = termios.tcgetattr(fd)
-            attrs[3] |= termios.ECHO | termios.ICANON
-            termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-        except Exception:
-            pass
-        # 给终端一点时间刷新
-        sys.stdout.flush()
-        time.sleep(0.05)
         sys.exit(ssh_connect(result))
+
+    if isinstance(result, tuple) and len(result) == 5 and result[0] == "transfer":
+        _, server, mode, local, remote = result
+        if mode == "upload":
+            sys.exit(scp_upload(server, local, remote))
+        else:
+            sys.exit(scp_download(server, remote, local))
 
 
 def build_parser() -> argparse.ArgumentParser:
