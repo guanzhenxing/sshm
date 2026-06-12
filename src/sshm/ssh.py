@@ -14,6 +14,12 @@ from sshm.vault import ServerConfig
 
 CONNECT_TIMEOUT = 10
 
+# 需要 SSH 时自动接受的选项
+_SSH_DEFAULT_OPTS = [
+    "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
+    "-o", "StrictHostKeyChecking=accept-new",
+]
+
 
 def ssh_connect(server: ServerConfig) -> int:
     """连接到 SSH 服务器，返回进程退出码。"""
@@ -25,11 +31,7 @@ def ssh_connect(server: ServerConfig) -> int:
 
 def _ssh_with_key(server: ServerConfig) -> int:
     """密钥认证 SSH 连接。"""
-    cmd = [
-        "ssh",
-        "-o", f"Port={server.port}",
-        "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
-    ]
+    cmd = ["ssh", "-o", f"Port={server.port}"] + _SSH_DEFAULT_OPTS
     if server.key_path:
         cmd.extend(["-i", server.key_path])
     cmd.append(f"{server.user}@{server.host}")
@@ -37,7 +39,6 @@ def _ssh_with_key(server: ServerConfig) -> int:
     print(f"Connecting to {server.user}@{server.host}:{server.port} ...")
     sys.stdout.flush()
 
-    # 用 subprocess 而非 os.execvp，确保终端状态可控
     result = subprocess.run(cmd)
     return result.returncode
 
@@ -47,9 +48,8 @@ def _ssh_with_password(server: ServerConfig) -> int:
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp("ssh", [
-            "ssh",
-            "-o", f"Port={server.port}",
-            "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
+            "ssh", "-o", f"Port={server.port}",
+        ] + _SSH_DEFAULT_OPTS + [
             f"{server.user}@{server.host}",
         ])
         os._exit(1)
@@ -77,8 +77,9 @@ def _ssh_with_password(server: ServerConfig) -> int:
         signal.signal(signal.SIGWINCH, _sigwinch)
 
         while True:
+            # 认证前也需要监听 stdin（用于处理 host key 等交互提示）
             sources = [fd]
-            if authenticated:
+            if authenticated or _needs_user_input(banner):
                 sources.append(sys.stdin)
 
             rlist, _, _ = select.select(sources, [], [], 30)
@@ -102,6 +103,12 @@ def _ssh_with_password(server: ServerConfig) -> int:
 
                 if not authenticated:
                     banner += data
+
+                    # 如果出现交互提示（host key 确认等），显示 banner 让用户输入
+                    if _needs_user_input(banner):
+                        os.write(sys.stdout.fileno(), banner)
+                        banner = b""
+
                     if b"password:" in banner.lower():
                         os.write(fd, password.encode("utf-8") + b"\n")
 
@@ -127,7 +134,7 @@ def _ssh_with_password(server: ServerConfig) -> int:
                 else:
                     os.write(sys.stdout.fileno(), data)
 
-            if sys.stdin in rlist and authenticated:
+            if sys.stdin in rlist:
                 try:
                     key = os.read(sys.stdin.fileno(), 4096)
                 except OSError:
@@ -137,7 +144,6 @@ def _ssh_with_password(server: ServerConfig) -> int:
                 os.write(fd, key)
 
     except (TimeoutError, PermissionError) as e:
-        # 确保错误信息可见
         sys.stdout.buffer.write(f"\r\n{e}\r\n".encode())
         sys.stdout.buffer.flush()
         os.waitpid(pid, os.WNOHANG)
@@ -148,11 +154,20 @@ def _ssh_with_password(server: ServerConfig) -> int:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
             except termios.error:
                 pass
-        # 兜底：确保终端恢复正常
         _restore_terminal()
 
     _, status = os.waitpid(pid, 0)
     return status
+
+
+def _needs_user_input(banner: bytes) -> bool:
+    """检测 banner 中是否包含需要用户输入的交互提示。"""
+    lower = banner.lower()
+    return (
+        b"(yes/no" in lower
+        or b"(yes/no/[fingerprint])" in lower
+        or b"are you sure" in lower
+    )
 
 
 def _restore_terminal() -> None:

@@ -214,7 +214,6 @@ def run_tui():
     app = SSHManagerApp(vault_path=vault_path)
     result = app.run()
 
-    # 如果 TUI 返回了 ServerConfig，说明用户选择连接
     if isinstance(result, ServerConfig):
         # 确保终端在 Textual 之后恢复正常
         try:
