@@ -80,9 +80,10 @@ class ServerForm(Vertical):
     }
     ServerForm Vertical {
         width: 70;
-        height: auto;
+        max-height: 80vh;
         padding: 1 4;
         border: thick $accent;
+        overflow-y: auto;
     }
     ServerForm Label {
         width: 100%;
