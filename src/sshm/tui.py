@@ -179,7 +179,19 @@ class ServerForm(Vertical):
             self._save()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """任意输入框按回车都触发保存。"""
+        """Enter 键跳到下一个字段，最后一个字段触发保存。"""
+        field_ids = [
+            "f-name", "f-host", "f-port", "f-user",
+            "f-auth", "f-keypath", "f-password", "f-group", "f-notes",
+        ]
+        current_id = event.input.id
+        if current_id in field_ids:
+            idx = field_ids.index(current_id)
+            if idx < len(field_ids) - 1:
+                # 跳到下一个字段
+                self.query_one(f"#{field_ids[idx + 1]}", Input).focus()
+                return
+        # 最后一个字段按 Enter → 保存
         self._save()
 
     def _save(self) -> None:
