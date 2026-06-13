@@ -71,7 +71,11 @@ class PasswordScreen(Screen):
 
 # ── 服务器添加/编辑表单 ────────────────────────────────
 
-class ServerForm(Vertical):
+class ServerForm(Screen):
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+    ]
 
     DEFAULT_CSS = """
     ServerForm {
@@ -118,6 +122,7 @@ class ServerForm(Vertical):
         title = "编辑服务器" if self.server else "添加服务器"
         s = self.server
 
+        yield Header()
         with Vertical():
             yield Label(title, id="form-title")
             yield Input(value=s.name if s else "", placeholder="名称 (必填)", id="f-name")
@@ -133,15 +138,14 @@ class ServerForm(Vertical):
             with Horizontal():
                 yield Button("保存", variant="success", id="btn-save")
                 yield Button("取消", variant="default", id="btn-cancel")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#f-name", Input).focus()
 
-    def on_key(self, event) -> None:
-        """Escape 取消表单。"""
-        if event.key == "escape":
-            event.stop()
-            self._close()
+    def action_cancel(self) -> None:
+        """Escape 绑定触发的取消(单一 escape 路径)。"""
+        self._close()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
@@ -406,8 +410,7 @@ class SSHManagerApp(App):
         self.push_screen(PasswordScreen(retry=retry))
 
     def _show_server_form(self, server: ServerConfig | None = None) -> None:
-        self._hide_main_content()
-        self.mount(ServerForm(server=server))
+        self.push_screen(ServerForm(server=server))
 
     def _show_transfer_form(self, server: ServerConfig, mode: str) -> None:
         self.push_screen(TransferForm(server=server, mode=mode))
@@ -415,20 +418,11 @@ class SSHManagerApp(App):
     def close_form(self) -> None:
         """关闭当前弹出的表单，返回主界面。
 
-        过渡状态：TransferForm 已是 Screen（pop_screen），ServerForm 仍是
-        被挂载的 Vertical（remove）—— Task 4 会把 ServerForm 也改成 Screen，
-        届时此分支可统一。
+        ServerForm 与 TransferForm 现在都是被 push 的 Screen，统一用 pop_screen。
         """
-        if isinstance(self.screen, TransferForm):
+        if isinstance(self.screen, (TransferForm, ServerForm)):
             self.pop_screen()
-            self._clear_focus()  # 同 do_authenticate：防 pop 后焦点落回 search-input
-        else:
-            # 过渡：ServerForm 仍是 Vertical（Task 4 改 Screen）
-            try:
-                self.query_one(ServerForm).remove()
-            except Exception:
-                pass
-            self._show_main_content()
+            self._clear_focus()  # 防 pop 后焦点落回 search-input
         self._refresh_table()
 
     def _clear_focus(self) -> None:

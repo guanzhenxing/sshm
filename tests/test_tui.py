@@ -155,7 +155,8 @@ async def test_add_server_creates_row(app_with_vault):
 
         await pilot.press("a")
         await pilot.pause()
-        assert app.query_one("#f-name", Input) is not None
+        # ServerForm 现在是被 push 的 Screen,用当前 screen 查询(同密码/传输界面测试)。
+        assert app.screen.query_one("#f-name", Input) is not None
 
         # 用 click 聚焦各字段填写(避免依赖 Tab 顺序)
         await pilot.click("#f-name")
