@@ -1,6 +1,5 @@
 """交互式 TUI — 基于 Textual。"""
 
-import sys
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
@@ -10,7 +9,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Label, Button
 
 from sshm.vault import Vault, ServerConfig
-from sshm.session import load_key, clear_key
+from sshm.session import load_key
 
 
 # ── 密码输入界面 ──────────────────────────────────────
@@ -338,7 +337,7 @@ class MainScreen(Screen):
     #      不会把焦点落到第一个可聚焦控件 (#search-input);
     #  (2) 焦点为 None 时 Screen._binding_chain 直接启用本屏 BINDINGS,且 DataTable 未
     #      聚焦 → 不会用其 enter→select_cursor 吞掉回车。
-    #  这是现有"认证后无焦点"行为的延续,据此彻底删除 _clear_focus。
+    #  这是现有"认证后无焦点"行为的延续,据此彻底删除旧的焦点清空辅助方法。
     AUTO_FOCUS: ClassVar[str | None] = ""
 
     BINDINGS = [
