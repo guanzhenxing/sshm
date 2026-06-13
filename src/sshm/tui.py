@@ -134,6 +134,12 @@ class ServerForm(Vertical):
     def on_mount(self) -> None:
         self.query_one("#f-name", Input).focus()
 
+    def on_key(self, event) -> None:
+        """Escape 取消表单。"""
+        if event.key == "escape":
+            event.stop()
+            self._close()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
             self._close()
@@ -270,6 +276,11 @@ class TransferForm(Vertical):
 
     def on_mount(self) -> None:
         self.query_one("#tf-local", Input).focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.stop()
+            self._close()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
