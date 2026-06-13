@@ -182,10 +182,11 @@ async def test_add_server_creates_row(app_with_vault):
 # ── 4. 删除服务器 ────────────────────────────────────────
 
 async def test_delete_server_removes_row(app_with_vault):
-    """选中第一行后按 d → 该服务器从表格消失。
+    """选中第一行后按 d → 该服务器从表格消失,并显示空占位行。
 
     注意:表格清空后会显示占位行,所以不能简单断言 row_count--。
-    这里断言"alpha 不再可见"这一真正的用户行为。
+    这里既断言"alpha 不再可见",也断言"空占位行已渲染"——
+    避免 action_delete_server 的 bare except 吞掉异常导致测试 vacuous pass。
     """
     app = app_with_vault
     async with app.run_test(size=TEST_SIZE) as pilot:
@@ -197,6 +198,8 @@ async def test_delete_server_removes_row(app_with_vault):
         await pilot.pause()
 
         assert not _row_contains(_table(app), "alpha")
+        # 正向断言:删除唯一服务器后,表格应渲染空占位行。
+        assert _row_contains(_table(app), "(empty")
 
 
 # ── 5. 连接(Enter)退出 ───────────────────────────────────
