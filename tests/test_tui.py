@@ -228,7 +228,8 @@ async def test_upload_exits_with_transfer_tuple(app_with_vault):
         # 认证后默认 cursor_row=0(选中 alpha),按 u 进入上传表单。
         await pilot.press("u")
         await pilot.pause()
-        assert app.query_one("#tf-local", Input) is not None
+        # TransferForm 现在是被 push 的 Screen,用当前 screen 查询(同密码界面测试)。
+        assert app.screen.query_one("#tf-local", Input) is not None
 
         await pilot.click("#tf-local")
         await pilot.press(*"./local.txt")

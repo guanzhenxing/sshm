@@ -213,8 +213,12 @@ class ServerForm(Vertical):
 
 # ── 文件传输表单 ──────────────────────────────────────
 
-class TransferForm(Vertical):
+class TransferForm(Screen):
     """上传/下载文件路径输入表单。"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+    ]
 
     DEFAULT_CSS = """
     TransferForm {
@@ -268,6 +272,7 @@ class TransferForm(Vertical):
             remote_ph = "远程文件路径 (如 /var/log/syslog)"
             local_ph = "本地保存路径 (如 ./syslog)"
 
+        yield Header()
         with Vertical():
             yield Label(title, id="form-title")
             yield Input(placeholder=local_ph, id="tf-local")
@@ -276,14 +281,14 @@ class TransferForm(Vertical):
             with Horizontal():
                 yield Button("开始传输", variant="success", id="btn-transfer")
                 yield Button("取消", variant="default", id="btn-cancel")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#tf-local", Input).focus()
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            event.stop()
-            self._close()
+    def action_cancel(self) -> None:
+        """Escape 绑定触发的取消(单一 escape 路径)。"""
+        self._close()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
@@ -405,19 +410,33 @@ class SSHManagerApp(App):
         self.mount(ServerForm(server=server))
 
     def _show_transfer_form(self, server: ServerConfig, mode: str) -> None:
-        self._hide_main_content()
-        self.mount(TransferForm(server=server, mode=mode))
+        self.push_screen(TransferForm(server=server, mode=mode))
 
     def close_form(self) -> None:
-        """关闭当前弹出的表单，返回主界面。"""
-        for cls in (ServerForm, TransferForm, PasswordScreen):
+        """关闭当前弹出的表单，返回主界面。
+
+        过渡状态：TransferForm 已是 Screen（pop_screen），ServerForm 仍是
+        被挂载的 Vertical（remove）—— Task 4 会把 ServerForm 也改成 Screen，
+        届时此分支可统一。
+        """
+        if isinstance(self.screen, TransferForm):
+            self.pop_screen()
+            self._clear_focus()  # 同 do_authenticate：防 pop 后焦点落回 search-input
+        else:
+            # 过渡：ServerForm 仍是 Vertical（Task 4 改 Screen）
             try:
-                self.query_one(cls).remove()
-                break
+                self.query_one(ServerForm).remove()
             except Exception:
-                continue
-        self._show_main_content()
+                pass
+            self._show_main_content()
         self._refresh_table()
+
+    def _clear_focus(self) -> None:
+        """延后清空焦点，抵消 pop_screen 后异步焦点恢复。
+
+        临时桥接：Task 5 引入优先级绑定后会删除此辅助方法。
+        """
+        self.call_after_refresh(self.set_focus, None)
 
     # ── 认证 ──────────────────────────────────────
 
@@ -436,7 +455,7 @@ class SSHManagerApp(App):
             # pop_screen 会在稍后的刷新里把焦点恢复到底层 screen 的首个可聚焦控件
             # (搜索框),这会让 a/d/enter/u 等应用级按键被搜索框吞掉,改变既有行为
             # (认证后应为无焦点)。延后到刷新完成后再清焦点,保持原行为。
-            self.call_after_refresh(self.set_focus, None)
+            self._clear_focus()
         self._refresh_table()
 
     # ── 服务器 CRUD ───────────────────────────────
