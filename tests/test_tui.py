@@ -27,7 +27,9 @@ import os
 import tempfile
 
 import pytest
-from textual.widgets import DataTable, Input
+from textual.dom import NoMatches
+from textual.widgets import DataTable, Footer, Input
+from textual.widgets._footer import FooterKey
 
 from sshm.tui import SSHManagerApp, MainScreen
 from sshm.vault import ServerConfig, Vault
@@ -260,3 +262,87 @@ async def test_upload_exits_with_transfer_tuple(app_with_vault):
     assert mode == "upload"
     assert local == "./local.txt"
     assert remote == "/remote/path.txt"
+
+
+# ── 7. Footer 统一设计(Screen 化重构后的回归保护) ──────────
+#
+# 重构前 bug:主屏底部同时渲染了一个手写的 status-bar Static 和一个 Footer,
+# 出现两条重复的快捷键提示。重构后每张 Screen 自己 yield 一个 Footer,且 Footer
+# 自动读取"当前活动 Screen"的 BINDINGS —— 所以 Footer 内容随栈顶 Screen 变化。
+# 以下用例锁定这两件事:(1) 每屏 Footer 显示本屏自己的绑定;(2) 主屏不再有重复行。
+
+def _footer_descriptions(app) -> set[str]:
+    """收集当前活动 Screen 上 Footer 各 FooterKey 的描述文本。
+
+    Footer.compose() 在 _bindings_ready 后从 self.screen.active_bindings 构建
+    FooterKey 子控件;每个 FooterKey 暴露 .description(如 "搜索"/"取消")。
+    直接读 .description 比 render().plain 更稳(后者含键名 + padding 空格)。
+    """
+    footer = app.screen.query_one(Footer)
+    return {fk.description for fk in footer.query(FooterKey)}
+
+
+async def test_main_screen_footer_shows_its_bindings(app_with_vault):
+    """主屏 Footer 显示主屏自己的绑定(搜索/添加/连接/退出…)。"""
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert isinstance(app.screen, MainScreen)
+
+        descs = _footer_descriptions(app)
+        # 主屏 BINDINGS 里这些描述都应出现在 Footer。
+        assert {"搜索", "添加", "连接", "退出"} <= descs
+        # 顺带多覆盖几个(这些一旦被删/改名,Footer 立刻反映)。
+        assert {"编辑", "删除", "上传", "下载"} <= descs
+
+
+async def test_main_screen_has_no_duplicate_status_bar(app_with_vault):
+    """主屏只有一行底部提示:旧的 status-bar 已删除,且恰好一个 Footer。
+
+    这是对"双行重复提示"原始 bug 的回归用例。
+    """
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert isinstance(app.screen, MainScreen)
+
+        # (a) 旧的 status-bar Static 已不存在。
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#status-bar")
+        # (b) 恰好一个 Footer(没有重复渲染)。
+        assert len(app.screen.query(Footer)) == 1
+
+
+async def test_form_footer_shows_cancel(app_with_vault):
+    """按 a 进入添加表单后,栈顶 ServerForm 的 Footer 显示"取消",
+    且不再显示主屏专属的"添加"/"连接"——证明 Footer 随当前 Screen 变化。"""
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("a")
+        await pilot.pause()
+
+        from sshm.tui import ServerForm
+        assert isinstance(app.screen, ServerForm)
+
+        descs = _footer_descriptions(app)
+        assert "取消" in descs
+        # 主屏专属绑定不该出现在表单屏 Footer 里(上下文敏感)。
+        assert "添加" not in descs
+        assert "连接" not in descs
+
+
+async def test_transfer_footer_shows_cancel(app_with_vault):
+    """按 u 进入上传表单后,栈顶 TransferForm 的 Footer 显示"取消"。"""
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("u")
+        await pilot.pause()
+
+        from sshm.tui import TransferForm
+        assert isinstance(app.screen, TransferForm)
+
+        descs = _footer_descriptions(app)
+        assert "取消" in descs
+        assert "添加" not in descs
