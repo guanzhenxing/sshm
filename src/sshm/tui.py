@@ -5,6 +5,7 @@ import sys
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
+from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static, Label, Button
 
 from sshm.vault import Vault, ServerConfig
@@ -13,7 +14,7 @@ from sshm.session import load_key, clear_key
 
 # ── 密码输入界面 ──────────────────────────────────────
 
-class PasswordScreen(Vertical):
+class PasswordScreen(Screen):
 
     DEFAULT_CSS = """
     PasswordScreen {
@@ -47,10 +48,12 @@ class PasswordScreen(Vertical):
         self.retry = retry
 
     def compose(self) -> ComposeResult:
+        yield Header()
         with Vertical():
             yield Label("sshm — SSH Server Manager" if not self.retry else "密码错误，请重试")
             yield Input(placeholder="输入主密码", password=True, id="password-input")
             yield Label("", id="error-label")
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#password-input", Input).focus()
@@ -375,7 +378,6 @@ class SSHManagerApp(App):
 
     def on_mount(self) -> None:
         self._setup_table()
-        self._hide_main_content()
 
         cached = load_key()
         if cached:
@@ -394,12 +396,9 @@ class SSHManagerApp(App):
         self.query_one(Footer).display = True
 
     def _show_password_screen(self, retry: bool = False) -> None:
-        try:
-            self.query_one("PasswordScreen").remove()
-        except Exception:
-            pass
-        self._hide_main_content()
-        self.mount(PasswordScreen(retry=retry))
+        if isinstance(self.screen, PasswordScreen):
+            self.pop_screen()
+        self.push_screen(PasswordScreen(retry=retry))
 
     def _show_server_form(self, server: ServerConfig | None = None) -> None:
         self._hide_main_content()
@@ -432,11 +431,12 @@ class SSHManagerApp(App):
             self._show_password_screen(retry=True)
             return
 
-        try:
-            self.query_one("PasswordScreen").remove()
-        except Exception:
-            pass
-        self._show_main_content()
+        if isinstance(self.screen, PasswordScreen):
+            self.pop_screen()
+            # pop_screen 会在稍后的刷新里把焦点恢复到底层 screen 的首个可聚焦控件
+            # (搜索框),这会让 a/d/enter/u 等应用级按键被搜索框吞掉,改变既有行为
+            # (认证后应为无焦点)。延后到刷新完成后再清焦点,保持原行为。
+            self.call_after_refresh(self.set_focus, None)
         self._refresh_table()
 
     # ── 服务器 CRUD ───────────────────────────────

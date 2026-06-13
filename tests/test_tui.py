@@ -103,7 +103,8 @@ async def test_starts_on_password_screen(app_with_vault):
     app = app_with_vault
     async with app.run_test(size=TEST_SIZE) as pilot:
         await pilot.pause()
-        pw_input = app.query_one("#password-input", Input)
+        # 密码输入框现在位于被 push 的 PasswordScreen 上,用当前 screen 查询。
+        pw_input = app.screen.query_one("#password-input", Input)
         assert pw_input is not None
         assert pw_input.has_focus
 
@@ -122,8 +123,8 @@ async def test_wrong_password_keeps_retry_screen(app_with_vault):
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot, password="wrong-password")
         assert not _row_contains(_table(app), "alpha")
-        # 密码输入框仍在(重试界面)
-        assert app.query_one("#password-input", Input) is not None
+        # 密码输入框仍在(重试界面,位于被 push 的 PasswordScreen 上)
+        assert app.screen.query_one("#password-input", Input) is not None
 
 
 # ── 2. 搜索 ───────────────────────────────────────────────
