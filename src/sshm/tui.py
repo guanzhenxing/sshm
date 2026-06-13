@@ -387,9 +387,11 @@ class SSHManagerApp(App):
 
     def _hide_main_content(self) -> None:
         self.query_one("#main-view").display = False
+        self.query_one(Footer).display = False
 
     def _show_main_content(self) -> None:
         self.query_one("#main-view").display = True
+        self.query_one(Footer).display = True
 
     def _show_password_screen(self, retry: bool = False) -> None:
         try:
