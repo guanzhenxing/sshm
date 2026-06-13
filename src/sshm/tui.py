@@ -1,12 +1,13 @@
 """交互式 TUI — 基于 Textual。"""
 
 import sys
+from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Static, Label, Button
+from textual.widgets import DataTable, Footer, Header, Input, Label, Button
 
 from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key, clear_key
@@ -327,35 +328,20 @@ class TransferForm(Screen):
             app.close_form()
 
 
-# ── 主应用 ─────────────────────────────────────────────
+# ── 主列表页 ─────────────────────────────────────────────
 
-class SSHManagerApp(App):
-    """sshm 交互式服务器管理界面。"""
+class MainScreen(Screen):
+    """主列表页:搜索 + 服务器表格。"""
 
-    TITLE = "sshm — SSH Server Manager"
-    CSS = """
-    #search-bar {
-        height: 3;
-        margin: 0 1;
-    }
-    #search-input {
-        width: 100%;
-    }
-    #status-bar {
-        height: 1;
-        color: $text-muted;
-        padding: 0 1;
-    }
-    #main-table {
-        height: 1fr;
-    }
-    #main-view {
-        height: 1fr;
-    }
-    """
+    # 禁用本屏自动聚焦 → 焦点保持为 None:
+    #  (1) Screen._update_auto_focus 因 auto_focus 为空而跳过,pop_screen 回到本屏时
+    #      不会把焦点落到第一个可聚焦控件 (#search-input);
+    #  (2) 焦点为 None 时 Screen._binding_chain 直接启用本屏 BINDINGS,且 DataTable 未
+    #      聚焦 → 不会用其 enter→select_cursor 吞掉回车。
+    #  这是现有"认证后无焦点"行为的延续,据此彻底删除 _clear_focus。
+    AUTO_FOCUS: ClassVar[str | None] = ""
 
     BINDINGS = [
-        Binding("q", "quit", "退出"),
         Binding("slash", "focus_search", "搜索", key_display="/"),
         Binding("a", "add_server", "添加"),
         Binding("e", "edit_server", "编辑"),
@@ -363,8 +349,127 @@ class SSHManagerApp(App):
         Binding("enter", "connect_server", "连接"),
         Binding("u", "upload_file", "上传"),
         Binding("x", "download_file", "下载"),
+        Binding("q", "quit", "退出"),
         Binding("escape", "unfocus_search", "取消搜索"),
     ]
+
+    DEFAULT_CSS = """
+    MainScreen #search-bar { height: 3; margin: 0 1; }
+    MainScreen #search-input { width: 100%; }
+    MainScreen #main-table { height: 1fr; }
+    MainScreen #main-view { height: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="main-view"):
+            with Horizontal(id="search-bar"):
+                yield Input(placeholder="搜索 (/)", id="search-input")
+            yield DataTable(id="main-table")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._setup_table()
+        self._refresh_table()
+        # 不聚焦任何控件:保持焦点 None,使本屏 BINDINGS 直接生效。
+
+    def _setup_table(self) -> None:
+        table = self.query_one("#main-table", DataTable)
+        table.cursor_type = "row"
+        table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
+
+    def _refresh_table(self, filter_text: str = "") -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        table = self.query_one("#main-table", DataTable)
+        table.clear()
+        filtered = app.servers
+        if filter_text:
+            ft = filter_text.lower()
+            filtered = [s for s in app.servers
+                        if ft in s.name.lower() or ft in s.host.lower()]
+        if not filtered:
+            if not app.servers:
+                table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
+            else:
+                table.add_row("", "(no match)", "", "", "", "")
+            return
+        for i, s in enumerate(filtered, 1):
+            auth_label = "key" if s.auth_type == "key" else "pwd"
+            table.add_row(str(i), s.name, s.host, s.user, auth_label, s.group)
+
+    def _get_selected_server(self) -> ServerConfig | None:
+        table = self.query_one("#main-table", DataTable)
+        row = table.cursor_row
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        if row is None or row >= len(app.servers):
+            return None
+        return app.servers[row]
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search-input":
+            self._refresh_table(event.value)
+
+    def action_focus_search(self) -> None:
+        self.query_one("#search-input", Input).focus()
+
+    def action_unfocus_search(self) -> None:
+        self.query_one("#search-input", Input).value = ""
+        self._refresh_table()
+        self.set_focus(None)  # 回到焦点-None 基线,a/d/enter/u 仍可用
+
+    def action_connect_server(self) -> None:
+        server = self._get_selected_server()
+        if server:
+            self.app.exit(result=server)
+
+    def action_add_server(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        app.show_server_form(server=None)
+
+    def action_edit_server(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        server = self._get_selected_server()
+        if server:
+            app.show_server_form(server=server)
+
+    def action_delete_server(self) -> None:
+        server = self._get_selected_server()
+        if not server:
+            return
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        try:
+            app.vault.remove_server(server.name, app.password)
+            app.servers = app.vault.list_servers(app.password)
+            self._refresh_table()
+        except Exception as e:
+            self.app.exit(message=f"Delete failed: {e}")
+
+    def action_upload_file(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        server = self._get_selected_server()
+        if server:
+            app.show_transfer_form(server, mode="upload")
+
+    def action_download_file(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        server = self._get_selected_server()
+        if server:
+            app.show_transfer_form(server, mode="download")
+
+
+# ── 主应用 ─────────────────────────────────────────────
+
+class SSHManagerApp(App):
+    """sshm 交互式服务器管理界面(协调者:持有状态、管理 Screen 栈)。"""
+
+    TITLE = "sshm — SSH Server Manager"
 
     def __init__(self, vault_path: str = "~/.sshm/vault.enc"):
         super().__init__()
@@ -373,64 +478,44 @@ class SSHManagerApp(App):
         self.servers: list[ServerConfig] = []
         self._authenticated = False
 
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(id="main-view"):
-            with Horizontal(id="search-bar"):
-                yield Input(placeholder="搜索 (/)", id="search-input")
-            yield DataTable(id="main-table")
-            yield Static(
-                "/ 搜索  ↑↓ 导航  Enter 连接  e 编辑  d 删除  u 上传  x 下载  q 退出",
-                id="status-bar",
-            )
-        yield Footer()
-
     def on_mount(self) -> None:
-        self._setup_table()
-
         cached = load_key()
         if cached:
             self.do_authenticate(cached)
         else:
             self._show_password_screen()
 
-    # ── 界面切换 ──────────────────────────────────
-
-    def _hide_main_content(self) -> None:
-        self.query_one("#main-view").display = False
-        self.query_one(Footer).display = False
-
-    def _show_main_content(self) -> None:
-        self.query_one("#main-view").display = True
-        self.query_one(Footer).display = True
+    # ── Screen 协调 ──────────────────────────────────
 
     def _show_password_screen(self, retry: bool = False) -> None:
         if isinstance(self.screen, PasswordScreen):
             self.pop_screen()
         self.push_screen(PasswordScreen(retry=retry))
 
-    def _show_server_form(self, server: ServerConfig | None = None) -> None:
+    def _show_main_screen(self) -> None:
+        self.push_screen(MainScreen())
+
+    def show_server_form(self, server: ServerConfig | None = None) -> None:
         self.push_screen(ServerForm(server=server))
 
-    def _show_transfer_form(self, server: ServerConfig, mode: str) -> None:
+    def show_transfer_form(self, server: ServerConfig, mode: str) -> None:
         self.push_screen(TransferForm(server=server, mode=mode))
 
     def close_form(self) -> None:
-        """关闭当前弹出的表单，返回主界面。
-
-        ServerForm 与 TransferForm 现在都是被 push 的 Screen，统一用 pop_screen。
-        """
+        """关闭栈顶表单/传输屏并刷新主屏。"""
         if isinstance(self.screen, (TransferForm, ServerForm)):
             self.pop_screen()
-            self._clear_focus()  # 防 pop 后焦点落回 search-input
-        self._refresh_table()
+        self.refresh_main()
 
-    def _clear_focus(self) -> None:
-        """延后清空焦点，抵消 pop_screen 后异步焦点恢复。
-
-        临时桥接：Task 5 引入优先级绑定后会删除此辅助方法。
-        """
-        self.call_after_refresh(self.set_focus, None)
+    def refresh_main(self) -> None:
+        """数据变更后刷新主屏表格(主屏不在栈上时忽略)。"""
+        # Textual 的 App.query_one 只在当前活动 screen 范围内搜索,而 close_form 在
+        # 表单 pop 之后、任何后续 push 之前调用,此刻主屏确实是活动屏;但为了对其它
+        # 调用时机也稳健,直接遍历 screen_stack 找到 MainScreen 实例再刷新。
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                screen._refresh_table()
+                return
 
     # ── 认证 ──────────────────────────────────────
 
@@ -443,14 +528,10 @@ class SSHManagerApp(App):
             self._authenticated = False
             self._show_password_screen(retry=True)
             return
-
+        # 认证成功:密码屏在栈上则弹出,然后进入主屏。
         if isinstance(self.screen, PasswordScreen):
             self.pop_screen()
-            # pop_screen 会在稍后的刷新里把焦点恢复到底层 screen 的首个可聚焦控件
-            # (搜索框),这会让 a/d/enter/u 等应用级按键被搜索框吞掉,改变既有行为
-            # (认证后应为无焦点)。延后到刷新完成后再清焦点,保持原行为。
-            self._clear_focus()
-        self._refresh_table()
+        self._show_main_screen()
 
     # ── 服务器 CRUD ───────────────────────────────
 
@@ -472,105 +553,3 @@ class SSHManagerApp(App):
     def do_transfer(self, server: ServerConfig, mode: str, local: str, remote: str) -> None:
         """退出 TUI 并执行文件传输。"""
         self.exit(result=("transfer", server, mode, local, remote))
-
-    # ── 表格 ──────────────────────────────────────
-
-    def _setup_table(self) -> None:
-        table = self.query_one("#main-table", DataTable)
-        table.cursor_type = "row"
-        table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
-
-    def _refresh_table(self, filter_text: str = "") -> None:
-        table = self.query_one("#main-table", DataTable)
-        table.clear()
-
-        filtered = self.servers
-        if filter_text:
-            ft = filter_text.lower()
-            filtered = [
-                s for s in self.servers
-                if ft in s.name.lower() or ft in s.host.lower()
-            ]
-
-        if not filtered:
-            if not self.servers:
-                table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
-            else:
-                table.add_row("", "(no match)", "", "", "", "")
-            return
-
-        for i, s in enumerate(filtered, 1):
-            auth_label = "key" if s.auth_type == "key" else "pwd"
-            table.add_row(str(i), s.name, s.host, s.user, auth_label, s.group)
-
-    # ── 事件处理 ──────────────────────────────────
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "search-input":
-            self._refresh_table(event.value)
-
-    # ── Actions ───────────────────────────────────
-
-    def action_focus_search(self) -> None:
-        if not self._authenticated:
-            return
-        self.query_one("#search-input", Input).focus()
-
-    def action_unfocus_search(self) -> None:
-        self.query_one("#search-input", Input).value = ""
-        self.query_one("#main-table", DataTable).focus()
-
-    def _get_selected_server(self) -> ServerConfig | None:
-        table = self.query_one("#main-table", DataTable)
-        row = table.cursor_row
-        if row is None or row >= len(self.servers):
-            return None
-        return self.servers[row]
-
-    def action_connect_server(self) -> None:
-        server = self._get_selected_server()
-        if not server:
-            return
-        self.exit(result=server)
-
-    def action_add_server(self) -> None:
-        if not self._authenticated:
-            return
-        self._show_server_form(server=None)
-
-    def action_edit_server(self) -> None:
-        if not self._authenticated:
-            return
-        server = self._get_selected_server()
-        if not server:
-            return
-        self._show_server_form(server=server)
-
-    def action_delete_server(self) -> None:
-        if not self._authenticated:
-            return
-        server = self._get_selected_server()
-        if not server:
-            return
-        try:
-            self.vault.remove_server(server.name, self.password)
-            self.servers = self.vault.list_servers(self.password)
-            self._refresh_table()
-        except Exception as e:
-            self.exit(message=f"Delete failed: {e}")
-
-    def action_upload_file(self) -> None:
-        if not self._authenticated:
-            return
-        server = self._get_selected_server()
-        if not server:
-            return
-        self._show_transfer_form(server, mode="upload")
-
-    def action_download_file(self) -> None:
-        if not self._authenticated:
-            return
-        server = self._get_selected_server()
-        if not server:
-            return
-        self._show_transfer_form(server, mode="download")

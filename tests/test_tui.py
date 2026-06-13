@@ -29,7 +29,7 @@ import tempfile
 import pytest
 from textual.widgets import DataTable, Input
 
-from sshm.tui import SSHManagerApp
+from sshm.tui import SSHManagerApp, MainScreen
 from sshm.vault import ServerConfig, Vault
 
 
@@ -76,7 +76,18 @@ async def _authenticate(pilot, password: str = TEST_PASSWORD) -> None:
 
 
 def _table(app) -> DataTable:
-    return app.query_one("#main-table", DataTable)
+    # #main-table 位于 MainScreen 上。MainScreen 仅在认证成功后 push,之后无论栈顶是
+    # 主屏还是某张表单/传输屏,MainScreen 都停留在 screen_stack 上。遍历 screen_stack
+    # 按类型找到它再取 #main-table:
+    #  - 认证成功后(绝大多数用例):栈上找到 MainScreen,返回其表格。
+    #  - 认证失败时(test_wrong_password_keeps_retry_screen):栈上没有 MainScreen,
+    #    返回一张空表 → _row_contains 对所有内容返回 False,与重构前"空表格不含
+    #    alpha"的行为完全一致,不改变任何断言语义。
+    # 注:Textual 的 app.query_one 只在当前活动 screen 范围内搜索,故必须遍历 screen_stack。
+    for screen in app.screen_stack:
+        if isinstance(screen, MainScreen):
+            return screen.query_one("#main-table", DataTable)
+    return DataTable()
 
 
 def _cell_to_str(cell) -> str:
