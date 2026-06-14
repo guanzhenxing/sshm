@@ -28,7 +28,7 @@ import tempfile
 
 import pytest
 from textual.dom import NoMatches
-from textual.widgets import DataTable, Footer, Input
+from textual.widgets import DataTable, Footer, Input, Label
 from textual.widgets._footer import FooterKey
 
 from sshm.tui import MainScreen, SSHManagerApp
@@ -571,3 +571,70 @@ async def test_main_screen_footer_shows_export_binding(app_with_vault):
         assert isinstance(app.screen, MainScreen)
         descs = _footer_descriptions(app)
         assert "导出" in descs
+
+
+async def test_import_form_adds_servers_to_table(monkeypatch):
+    """按 i → 导入表单 → 填路径 → 跳过同名导入 → beta 出现在主表。"""
+    from sshm.io import write_export
+
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)  # vault 含 alpha
+        export_path = os.path.join(d, "exp.json")
+        write_export([
+            ServerConfig(name="beta", host="2.2.2.2", port=22, user="root",
+                         auth_type="password", password="y"),
+        ], export_path)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+            assert _row_contains(_table(app), "alpha")
+
+            await pilot.press("i")
+            await pilot.pause()
+            from sshm.tui import ImportForm
+            assert isinstance(app.screen, ImportForm)
+
+            await pilot.click("#if-path")
+            await pilot.press(*export_path)
+            await pilot.click("#btn-skip")
+            await pilot.pause()
+
+            # 导入后主表刷新：alpha + beta 都在
+            assert _row_contains(_table(app), "alpha")
+            assert _row_contains(_table(app), "beta")
+
+
+async def test_import_form_footer_shows_cancel(app_with_vault):
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("i")
+        await pilot.pause()
+        from sshm.tui import ImportForm
+        assert isinstance(app.screen, ImportForm)
+        descs = _footer_descriptions(app)
+        assert "取消" in descs
+        assert "添加" not in descs
+
+
+async def test_import_invalid_file_shows_error(monkeypatch):
+    """导入不存在的文件 → ImportForm 仍在前台、#error-label 回显错误。"""
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+            await pilot.press("i")
+            await pilot.pause()
+            await pilot.click("#if-path")
+            await pilot.press(*os.path.join(d, "nope.json"))
+            await pilot.click("#btn-skip")
+            await pilot.pause()
+            # 仍在导入表单（未关闭），且错误标签有内容
+            from sshm.tui import ImportForm
+            assert isinstance(app.screen, ImportForm)
+            assert app.screen.query_one("#error-label", Label).content

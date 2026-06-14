@@ -11,7 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
 from sshm import __version__
-from sshm.io import write_export
+from sshm.io import read_export, write_export
 from sshm.session import load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
@@ -455,6 +455,109 @@ class ExportForm(Screen):
             app.close_form()
 
 
+# ── 导入表单 ──────────────────────────────────────────
+
+class ImportForm(Screen):
+    """服务器列表导入表单（三策略按钮 + 取消）。"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+    ]
+
+    DEFAULT_CSS = """
+    ImportForm {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    ImportForm Vertical {
+        width: 70;
+        max-height: 80vh;
+        padding: 1 4;
+        border: thick $accent;
+        overflow-y: auto;
+    }
+    ImportForm Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ImportForm Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ImportForm #error-label {
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ImportForm Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+    ImportForm Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical():
+            yield Label("导入服务器列表", id="form-title")
+            yield Input(placeholder="导入文件路径（如 ~/sshm-export.json）", id="if-path")
+            yield Input(
+                placeholder="解密密码（仅加密文件需要）",
+                password=True, id="if-password",
+            )
+            yield Label("", id="error-label")
+            with Horizontal():
+                yield Button("跳过同名", variant="default", id="btn-skip")
+                yield Button("覆盖同名", variant="warning", id="btn-overwrite")
+                yield Button("重命名", variant="primary", id="btn-rename")
+                yield Button("取消", variant="default", id="btn-cancel")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#if-path", Input).focus()
+
+    def action_cancel(self) -> None:
+        """Escape 绑定触发的取消(单一 escape 路径)。"""
+        self._close()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-cancel":
+            self._close()
+        elif bid == "btn-skip":
+            self._do_import("skip")
+        elif bid == "btn-overwrite":
+            self._do_import("overwrite")
+        elif bid == "btn-rename":
+            self._do_import("rename")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "if-path":
+            self.query_one("#if-password", Input).focus()
+        elif event.input.id == "if-password":
+            self._do_import("skip")
+
+    def _do_import(self, strategy: str) -> None:
+        path = self.query_one("#if-path", Input).value.strip()
+        pwd = self.query_one("#if-password", Input).value.strip() or None
+        if not path:
+            self.query_one("#error-label", Label).update("路径不能为空")
+            return
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.do_import(path, pwd, strategy)
+
+    def _close(self) -> None:
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.close_form()
+
+
 # ── 主列表页 ─────────────────────────────────────────────
 
 class MainScreen(Screen):
@@ -484,6 +587,7 @@ class MainScreen(Screen):
         Binding("u", "upload_file", "上传"),
         Binding("x", "download_file", "下载"),
         Binding("o", "export_servers", "导出"),
+        Binding("i", "import_servers", "导入"),
         # action_quit 定义在 App 上、Screen 上没有,Textual 不会自动上溯命名空间查找,
         # 故必须用 'app.quit' 显式指向上 App,否则 q "无目标" 不退出。
         Binding("q", "app.quit", "退出"),
@@ -616,6 +720,11 @@ class MainScreen(Screen):
         assert isinstance(app, SSHManagerApp)
         app.show_export_form()
 
+    def action_import_servers(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        app.show_import_form()
+
 
 # ── 主应用 ─────────────────────────────────────────────
 
@@ -662,9 +771,12 @@ class SSHManagerApp(App):
     def show_export_form(self) -> None:
         self.push_screen(ExportForm())
 
+    def show_import_form(self) -> None:
+        self.push_screen(ImportForm())
+
     def close_form(self) -> None:
         """关闭栈顶表单/传输屏并刷新主屏。"""
-        if isinstance(self.screen, (TransferForm, ServerForm, ExportForm)):
+        if isinstance(self.screen, (TransferForm, ServerForm, ExportForm, ImportForm)):
             self.pop_screen()
         self.refresh_main()
 
@@ -730,9 +842,26 @@ class SSHManagerApp(App):
         except Exception as e:
             self._show_form_error(f"导出失败：{e}")
 
-    def _show_form_error(self, message: str) -> None:
-        """在当前表单的 #error-label 回显错误（表单不在栈上则忽略）。"""
+    def do_import(self, path: str, decrypt_password: str | None, strategy: str) -> None:
         try:
-            self.query_one("#error-label", Label).update(message)
-        except NoMatches:
-            pass
+            incoming = read_export(os.path.expanduser(path), decrypt_password)
+            report = self.vault.merge_servers(incoming, strategy, self.password)
+            self.servers = self.vault.list_servers(self.password)
+            self.close_form()
+            self.notify(report.summary(), timeout=4)
+        except Exception as e:
+            self._show_form_error(f"导入失败：{e}")
+
+    def _show_form_error(self, message: str) -> None:
+        """在当前表单的 #error-label 回显错误（表单不在栈上则忽略）。
+
+        注意：App.query_one 只在 self.screen 上搜索，而 do_export/do_import 由表单
+        Screen 的 on_button_pressed 同步触发时，self.screen 仍可能是 _default，找不到
+        表单上的 #error-label。故遍历 screen_stack 找到栈顶带 #error-label 的表单屏。
+        """
+        for screen in reversed(self.screen_stack):
+            try:
+                screen.query_one("#error-label", Label).update(message)
+                return
+            except NoMatches:
+                continue
