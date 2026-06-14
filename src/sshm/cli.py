@@ -6,6 +6,7 @@ import os
 import sys
 import time
 
+from sshm import __version__
 from sshm.session import clear_password, load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
@@ -261,6 +262,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="SSH Server Manager — encrypted, interactive CLI",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="详细输出")
+    parser.add_argument(
+        "-V", "--version", action="version", version=f"sshm {__version__}",
+    )
     parser.add_argument("--no-cache", action="store_true", help="跳过 Keychain 缓存")
     parser.add_argument("--vault", default="~/.sshm/vault.enc", help="vault 文件路径")
 

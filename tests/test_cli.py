@@ -125,3 +125,13 @@ class TestCLIParsing:
             with patch("sys.argv", ["sshm", "lock"]):
                 main()
             mock_clear.assert_called_once()
+
+    def test_version_flag_prints_version(self, capsys):
+        from sshm import __version__
+
+        with patch("sys.argv", ["sshm", "--version"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert __version__ in (captured.out + captured.err)

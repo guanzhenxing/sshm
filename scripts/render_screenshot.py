@@ -15,7 +15,7 @@ import tempfile
 # 让脚本能 import 项目源码（src layout），无需安装。
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import sshm.session  # noqa: E402
+import sshm.tui  # noqa: E402
 from sshm.tui import SSHManagerApp  # noqa: E402
 from sshm.vault import ServerConfig, Vault  # noqa: E402
 
@@ -54,8 +54,10 @@ async def render(out_path: str) -> None:
         for server in DEMO_SERVERS:
             vault.add_server(server, DEMO_PASSWORD)
 
-        # 强制走"无缓存 → 显示密码界面"路径，不读真实 Keychain。
-        sshm.session.load_key = lambda: None  # type: ignore[assignment]
+        # 强制走"无缓存 → 显示密码界面"路径，不读/写真实 Keychain。
+        # (打在 sshm.tui.* 上：tui 用 from-import 把名字绑进自己命名空间。)
+        sshm.tui.load_password = lambda: None  # type: ignore[assignment]
+        sshm.tui.store_password = lambda *a, **k: None  # type: ignore[assignment]
 
         app = SSHManagerApp(vault_path=vault_path)
         async with app.run_test(size=(118, 40)) as pilot:

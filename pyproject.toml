@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sshm"
-version = "0.1.0"
+dynamic = ["version"]
 description = "SSH Server Manager for macOS — encrypted, interactive CLI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,6 +49,9 @@ sshm = "sshm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "sshm.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

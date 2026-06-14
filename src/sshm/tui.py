@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
+from sshm import __version__
 from sshm.session import load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
@@ -517,6 +518,7 @@ class SSHManagerApp(App):
     """sshm 交互式服务器管理界面(协调者:持有状态、管理 Screen 栈)。"""
 
     TITLE = "sshm — SSH Server Manager"
+    SUB_TITLE = f"v{__version__}"
 
     def __init__(self, vault_path: str = "~/.sshm/vault.enc", no_cache: bool = False):
         super().__init__()

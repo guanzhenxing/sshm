@@ -510,3 +510,13 @@ async def test_no_cache_does_not_store_master_password(monkeypatch):
         async with app.run_test(size=TEST_SIZE) as pilot:
             await _authenticate(pilot)
     assert stored == []
+
+
+# ── 10. 版本显示 ─────────────────────────────────────────
+
+def test_app_subtitle_shows_version():
+    """App 的 SUB_TITLE 带 v 前缀的版本号 → Header 会在每个页面（含主页面）渲染。"""
+    from sshm import __version__
+
+    app = SSHManagerApp(vault_path="/tmp/unused-vault.enc")
+    assert app.sub_title == f"v{__version__}"
