@@ -1,14 +1,17 @@
 """交互式 TUI — 基于 Textual。"""
 
+import os
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.dom import NoMatches
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
 from sshm import __version__
+from sshm.io import write_export
 from sshm.session import load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
@@ -356,6 +359,102 @@ class TransferForm(Screen):
             app.close_form()
 
 
+# ── 导出表单 ──────────────────────────────────────────
+
+class ExportForm(Screen):
+    """服务器列表导出表单。"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+    ]
+
+    DEFAULT_CSS = """
+    ExportForm {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    ExportForm Vertical {
+        width: 60;
+        max-height: 80vh;
+        padding: 1 4;
+        border: thick $accent;
+        overflow-y: auto;
+    }
+    ExportForm Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ExportForm Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    ExportForm #error-label {
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ExportForm Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+    ExportForm Button {
+        margin: 0 2;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical():
+            yield Label("导出服务器列表", id="form-title")
+            yield Input(placeholder="输出文件路径（如 ~/sshm-export.json）", id="ef-path")
+            yield Input(
+                placeholder="加密密码（可选；留空=明文导出）",
+                password=True, id="ef-password",
+            )
+            yield Label("", id="error-label")
+            with Horizontal():
+                yield Button("导出", variant="success", id="btn-export")
+                yield Button("取消", variant="default", id="btn-cancel")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#ef-path", Input).focus()
+
+    def action_cancel(self) -> None:
+        """Escape 绑定触发的取消(单一 escape 路径)。"""
+        self._close()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self._close()
+        elif event.button.id == "btn-export":
+            self._do_export()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "ef-path":
+            self.query_one("#ef-password", Input).focus()
+        elif event.input.id == "ef-password":
+            self._do_export()
+
+    def _do_export(self) -> None:
+        path = self.query_one("#ef-path", Input).value.strip()
+        pwd = self.query_one("#ef-password", Input).value.strip() or None
+        if not path:
+            self.query_one("#error-label", Label).update("路径不能为空")
+            return
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.do_export(path, pwd)
+
+    def _close(self) -> None:
+        app = self.app
+        if isinstance(app, SSHManagerApp):
+            app.close_form()
+
+
 # ── 主列表页 ─────────────────────────────────────────────
 
 class MainScreen(Screen):
@@ -384,6 +483,7 @@ class MainScreen(Screen):
         Binding("enter", "connect_server", "连接"),
         Binding("u", "upload_file", "上传"),
         Binding("x", "download_file", "下载"),
+        Binding("o", "export_servers", "导出"),
         # action_quit 定义在 App 上、Screen 上没有,Textual 不会自动上溯命名空间查找,
         # 故必须用 'app.quit' 显式指向上 App,否则 q "无目标" 不退出。
         Binding("q", "app.quit", "退出"),
@@ -511,6 +611,11 @@ class MainScreen(Screen):
         if server:
             app.show_transfer_form(server, mode="download")
 
+    def action_export_servers(self) -> None:
+        app = self.app
+        assert isinstance(app, SSHManagerApp)
+        app.show_export_form()
+
 
 # ── 主应用 ─────────────────────────────────────────────
 
@@ -554,9 +659,12 @@ class SSHManagerApp(App):
     def show_transfer_form(self, server: ServerConfig, mode: str) -> None:
         self.push_screen(TransferForm(server=server, mode=mode))
 
+    def show_export_form(self) -> None:
+        self.push_screen(ExportForm())
+
     def close_form(self) -> None:
         """关闭栈顶表单/传输屏并刷新主屏。"""
-        if isinstance(self.screen, (TransferForm, ServerForm)):
+        if isinstance(self.screen, (TransferForm, ServerForm, ExportForm)):
             self.pop_screen()
         self.refresh_main()
 
@@ -611,3 +719,20 @@ class SSHManagerApp(App):
     def do_transfer(self, server: ServerConfig, mode: str, local: str, remote: str) -> None:
         """退出 TUI 并执行文件传输。"""
         self.exit(result=("transfer", server, mode, local, remote))
+
+    # ── 导入/导出 ────────────────────────────────────
+
+    def do_export(self, path: str, encrypt_password: str | None) -> None:
+        try:
+            write_export(self.servers, os.path.expanduser(path), encrypt_password)
+            self.close_form()
+            self.notify(f"已导出到 {path}", timeout=3)
+        except Exception as e:
+            self._show_form_error(f"导出失败：{e}")
+
+    def _show_form_error(self, message: str) -> None:
+        """在当前表单的 #error-label 回显错误（表单不在栈上则忽略）。"""
+        try:
+            self.query_one("#error-label", Label).update(message)
+        except NoMatches:
+            pass

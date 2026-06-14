@@ -520,3 +520,54 @@ def test_app_subtitle_shows_version():
 
     app = SSHManagerApp(vault_path="/tmp/unused-vault.enc")
     assert app.sub_title == f"v{__version__}"
+
+
+# ── 11. 导入/导出 ────────────────────────────────────────
+
+async def test_export_form_writes_file(monkeypatch):
+    """按 o → 导出表单 → 填路径 → 导出 → 文件写入并可读回。"""
+    from sshm.io import read_export
+
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        export_path = os.path.join(d, "out.json")
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+            await pilot.press("o")
+            await pilot.pause()
+            from sshm.tui import ExportForm
+            assert isinstance(app.screen, ExportForm)
+
+            await pilot.click("#ef-path")
+            await pilot.press(*export_path)
+            await pilot.click("#btn-export")
+            await pilot.pause()
+
+        assert os.path.exists(export_path)
+        loaded = read_export(export_path)
+        assert any(s.name == "alpha" for s in loaded)
+
+
+async def test_export_form_footer_shows_cancel(app_with_vault):
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("o")
+        await pilot.pause()
+        from sshm.tui import ExportForm
+        assert isinstance(app.screen, ExportForm)
+        descs = _footer_descriptions(app)
+        assert "取消" in descs
+        assert "添加" not in descs
+
+
+async def test_main_screen_footer_shows_export_binding(app_with_vault):
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert isinstance(app.screen, MainScreen)
+        descs = _footer_descriptions(app)
+        assert "导出" in descs
