@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.2] - 2026-06-14
+
+### 新增
+
+- **服务器列表导入/导出**：`sshm export`（明文 JSON 自描述信封，可选 `--encrypt` 用独立密码二次 AES-256-GCM 加密）/ `sshm import <file>`（三策略 `--skip`(默认) / `--overwrite` / `--rename`、`--dry-run`、stdin `-`）；TUI 主屏 `o` 导出 / `i` 导入。原子导入（任一条目非法则整体中止、不写半截数据），并兼容旧版裸 JSON 数组。覆盖备份/恢复、机器迁移、批量编辑、多机同步场景。
+
 ## [0.1.1] - 2026-06-14
 
 ### 修复
@@ -35,5 +41,6 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
+[0.1.2]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.1
 [0.1.0]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.0
