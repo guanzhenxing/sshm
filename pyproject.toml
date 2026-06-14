@@ -6,8 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "sshm"
 version = "0.1.0"
 description = "SSH Server Manager for macOS — encrypted, interactive CLI"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "Jesen Kwan" }]
+keywords = ["ssh", "ssh-manager", "macos", "textual", "tui", "scp", "credentials"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: MacOS X",
+    "Intended Audience :: System Administrators",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
 
 dependencies = [
     "textual>=3.0",
@@ -18,7 +35,14 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "ruff>=0.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/guanzhenxing/sshm"
+Repository = "https://github.com/guanzhenxing/sshm"
+Issues = "https://github.com/guanzhenxing/sshm/issues"
+Changelog = "https://github.com/guanzhenxing/sshm/blob/main/CHANGELOG.md"
 
 [project.scripts]
 sshm = "sshm.cli:main"
@@ -29,3 +53,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
