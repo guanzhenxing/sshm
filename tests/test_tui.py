@@ -44,7 +44,10 @@ TEST_SIZE = (80, 50)
 def app_with_vault(monkeypatch):
     """临时 vault(含一台服务器)+ 已配置但尚未运行的 App。
 
-    monkeypatch 让 session.load_key 返回 None,强制走"无缓存 → 显示密码界面"的路径。
+    monkeypatch 让 tui.load_password 返回 None,强制走"无缓存 → 显示密码界面"的路径;
+    并把 tui.store_password 桩成空操作,避免认证成功时写入真实 Keychain。
+    (补丁打在 sshm.tui.* 上:tui 用 `from sshm.session import ...` 把名字绑进自己
+    命名空间,打 sshm.session.* 不会影响它——这是修复前测试里一处无效补丁。)
     """
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "vault.enc")
@@ -61,7 +64,8 @@ def app_with_vault(monkeypatch):
             ),
             TEST_PASSWORD,
         )
-        monkeypatch.setattr("sshm.session.load_key", lambda: None)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
         app = SSHManagerApp(vault_path=path)
         yield app
 
@@ -374,7 +378,8 @@ def app_with_three_servers(monkeypatch):
         vault.init(TEST_PASSWORD)
         for s in servers:
             vault.add_server(s, TEST_PASSWORD)
-        monkeypatch.setattr("sshm.session.load_key", lambda: None)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
         app = SSHManagerApp(vault_path=path)
         yield app
 
@@ -433,3 +438,75 @@ async def test_quit_key_exits_from_main_screen(app_with_vault):
         await pilot.pause()
         # App.exit() 会把 _exit 置 True —— 按 q 后应已请求退出。
         assert app._exit
+
+
+# ── 9. 会话缓存（Keychain） ──────────────────────────────
+#
+# 历史真实 bug：session.store_key 在生产代码里从未被调用 → 缓存只读不写 →
+# "首次解锁后免输主密码"的特性实际从未生效，`--no-cache` 与默认行为无异、
+# `sshm lock` 形同空操作。以下用例锁定"认证成功写缓存 / 有效缓存跳过密码界面 /
+# 失效缓存回落 / --no-cache 不写"四条契约。
+
+def _vault_with_server(d: str) -> str:
+    path = os.path.join(d, "vault.enc")
+    vault = Vault(path)
+    vault.init(TEST_PASSWORD)
+    vault.add_server(
+        ServerConfig(name="alpha", host="1.2.3.4", port=22, user="root",
+                     auth_type="password", password="x"),
+        TEST_PASSWORD,
+    )
+    return path
+
+
+async def test_successful_auth_caches_master_password(monkeypatch):
+    """无缓存启动 → 输入正确主密码 → 应把主密码写入 Keychain（原本缺失的写入路径）。"""
+    stored = []
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda pw: stored.append(pw))
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+    assert stored == [TEST_PASSWORD]
+
+
+async def test_cached_valid_password_skips_password_screen(monkeypatch):
+    """Keychain 有有效缓存 → 启动直接进主屏，不显示密码界面。"""
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: TEST_PASSWORD)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, MainScreen)
+            with pytest.raises(NoMatches):
+                app.screen.query_one("#password-input", Input)
+
+
+async def test_stale_cache_falls_back_to_password_screen(monkeypatch):
+    """Keychain 缓存无效（密码已改）→ 回到密码界面重试，主屏不出现。"""
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: "stale-wrong-password")
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await pilot.pause()
+            assert not isinstance(app.screen, MainScreen)
+            # 仍在密码界面（且为重试态）。
+            assert app.screen.query_one("#password-input", Input) is not None
+
+
+async def test_no_cache_does_not_store_master_password(monkeypatch):
+    """--no-cache 启动的 TUI：认证成功也不写 Keychain。"""
+    stored = []
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        monkeypatch.setattr("sshm.tui.store_password", lambda pw: stored.append(pw))
+        app = SSHManagerApp(vault_path=path, no_cache=True)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+    assert stored == []

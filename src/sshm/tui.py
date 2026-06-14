@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
-from sshm.session import load_key
+from sshm.session import load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
 # ── 密码输入界面 ──────────────────────────────────────
@@ -518,15 +518,19 @@ class SSHManagerApp(App):
 
     TITLE = "sshm — SSH Server Manager"
 
-    def __init__(self, vault_path: str = "~/.sshm/vault.enc"):
+    def __init__(self, vault_path: str = "~/.sshm/vault.enc", no_cache: bool = False):
         super().__init__()
         self.vault = Vault(vault_path)
         self.password = ""
         self.servers: list[ServerConfig] = []
         self._authenticated = False
+        self.no_cache = no_cache
 
     def on_mount(self) -> None:
-        cached = load_key()
+        if self.no_cache:
+            self._show_password_screen()
+            return
+        cached = load_password()
         if cached:
             self.do_authenticate(cached)
         else:
@@ -569,13 +573,18 @@ class SSHManagerApp(App):
     def do_authenticate(self, password: str) -> None:
         try:
             self.servers = self.vault.list_servers(password)
-            self.password = password
-            self._authenticated = True
         except Exception:
             self._authenticated = False
             self._show_password_screen(retry=True)
             return
-        # 认证成功:密码屏在栈上则弹出,然后进入主屏。
+        self.password = password
+        self._authenticated = True
+        # 认证成功:把主密码写进 Keychain 缓存(原本缺失的写入路径),下次启动免输主密码。
+        # 下次用同一主密码成功认证时刷新 TTL,保持会话存活;用户随后输对密码也会自愈
+        # 掉先前失效的缓存。
+        if not self.no_cache:
+            store_password(password)
+        # 密码屏在栈上则弹出,然后进入主屏。
         if isinstance(self.screen, PasswordScreen):
             self.pop_screen()
         self._show_main_screen()

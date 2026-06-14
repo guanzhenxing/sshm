@@ -12,7 +12,7 @@
 - **CLI**（argparse）：`init` / `add` / `ls` / `connect`(=`ssh`) / `edit` / `rm` / `upload` / `download` / `password` / `lock` / `export`。
 - **SSH 连接**：基于 pty，密钥与密码认证；密码认证无需 sshpass；自动接受首次 host key、ConnectTimeout、终端状态恢复。
 - **SCP 文件传输**：上传 / 下载。
-- **会话缓存**：派生 AES 密钥存 macOS Keychain，TTL 3600s；`sshm lock` 清除。
+- **会话缓存**：主密码存 macOS Keychain，TTL 3600s；`sshm lock` 清除。
 - **交互式 TUI**（Textual）：服务器列表、实时搜索、快捷键操作、内置添加/编辑/传输表单。
 - **数据校验**：`ServerConfig` 必填/端口范围/认证方式校验 + `~` 展开；fcntl 文件锁防并发损坏。
 - **安装脚本** `install.sh`（wrapper / 卸载）。
@@ -22,6 +22,7 @@
 - 错误密码显示友好提示而非堆栈；密码输入改用 Textual 原生组件（修复 getpass 卡死）。
 - 表单：小窗口滚动、Enter 跳字段、Escape 取消、CSS `%` 字符导致的 ValueError。
 - TUI：进入表单隐藏误导性 Footer；**主屏 `q` 退出**（`quit` → `app.quit`）；**搜索过滤后选中错位**与**搜索框焦点陷阱**。
+- **会话缓存写入路径缺失**：`session.store_*` 在生产代码中从未被调用 → "首次解锁后免输主密码" 实际从未生效，`--no-cache` 与默认行为无异、`sshm lock` 形同空操作。现于认证成功（`vault.load` 校验通过）后写入缓存；并把 session API 与文档从误导性的"派生密钥"正名为"主密码"（与两个消费方的实际行为一致）。
 
 ### 重构
 

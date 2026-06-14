@@ -6,7 +6,7 @@ import os
 import sys
 import time
 
-from sshm.session import clear_key, load_key
+from sshm.session import clear_password, load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
 
@@ -15,13 +15,29 @@ def get_password(prompt: str = "Master password: ") -> str:
     return getpass.getpass(prompt)
 
 
-def get_vault_password(args) -> str:
-    """获取 vault 密码：优先从 Keychain 缓存读取，否则提示输入。"""
+def get_vault_password(args, vault: Vault) -> str:
+    """获取主密码：优先校验 Keychain 缓存，缓存缺失/失效则提示输入并写回缓存。
+
+    会用 vault.load 校验候选密码——校验通过才返回/缓存，避免把误输的密码缓存下来。
+    """
     if not args.no_cache:
-        cached = load_key()
+        cached = load_password()
         if cached:
-            return cached
-    return get_password()
+            try:
+                vault.load(cached)
+                return cached
+            except Exception:
+                clear_password()  # 缓存失效（密码已改）：清掉后回落到提示
+    while True:
+        password = get_password()
+        try:
+            vault.load(password)
+        except Exception:
+            print("密码错误，请重试。")
+            continue
+        if not args.no_cache:
+            store_password(password)
+        return password
 
 
 def cmd_init(args):
@@ -43,7 +59,7 @@ def cmd_init(args):
 def cmd_add(args):
     """处理 add 命令。"""
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     print("Adding a new server:")
     name = input("  Name: ")
     host = input("  Host: ")
@@ -71,7 +87,7 @@ def cmd_add(args):
 def cmd_ls(args):
     """处理 ls 命令。"""
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     servers = vault.list_servers(password)
     if not servers:
         print("(no servers configured — use 'sshm add' to add one)")
@@ -87,7 +103,7 @@ def cmd_connect(args):
     """处理 connect/ssh 命令。"""
     from sshm.ssh import ssh_connect
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     servers = vault.list_servers(password)
     if not servers:
         print("No servers configured. Add one with 'sshm add' first.")
@@ -99,7 +115,7 @@ def cmd_connect(args):
 def cmd_edit(args):
     """处理 edit 命令。"""
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     servers = vault.list_servers(password)
     server = _find_server(servers, args.server)
     print(f"Editing '{server.name}' (press Enter to keep current value):")
@@ -129,7 +145,7 @@ def cmd_edit(args):
 def cmd_rm(args):
     """处理 rm 命令。"""
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     vault.remove_server(args.server, password)
     print(f"Server '{args.server}' removed.")
 
@@ -138,7 +154,7 @@ def cmd_upload(args):
     """处理 upload 命令。"""
     from sshm.transfer import scp_upload
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     servers = vault.list_servers(password)
     server = _find_server(servers, args.server)
     sys.exit(scp_upload(server, args.local, args.remote))
@@ -148,7 +164,7 @@ def cmd_download(args):
     """处理 download 命令。"""
     from sshm.transfer import scp_download
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     servers = vault.list_servers(password)
     server = _find_server(servers, args.server)
     sys.exit(scp_download(server, args.remote, args.local))
@@ -169,13 +185,13 @@ def cmd_password(args):
         print("两次输入的新密码不一致。")
         sys.exit(1)
     vault.save(data, new_password)
-    clear_key()
+    clear_password()
     print("Master password changed.")
 
 
 def cmd_lock(args):
     """处理 lock 命令。"""
-    clear_key()
+    clear_password()
     print("Session locked. Master password will be required on next use.")
 
 
@@ -183,7 +199,7 @@ def cmd_export(args):
     """处理 export 命令。"""
     import json
     vault = Vault(args.vault)
-    password = get_vault_password(args)
+    password = get_vault_password(args, vault)
     data = vault.load(password)
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -213,7 +229,7 @@ def run_tui():
     args, _ = parser.parse_known_args()
     vault_path = getattr(args, "vault", "~/.sshm/vault.enc")
 
-    app = SSHManagerApp(vault_path=vault_path)
+    app = SSHManagerApp(vault_path=vault_path, no_cache=getattr(args, "no_cache", False))
     result = app.run()
 
     # 确保终端恢复
