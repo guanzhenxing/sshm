@@ -16,6 +16,7 @@
 - **交互式 TUI**（Textual）：服务器列表、实时搜索、快捷键操作、内置添加/编辑/传输表单。
 - **数据校验**：`ServerConfig` 必填/端口范围/认证方式校验 + `~` 展开；fcntl 文件锁防并发损坏。
 - **安装脚本** `install.sh`（wrapper / 卸载）。
+- **版本管理**：`sshm --version`、TUI 主页面显示版本号；版本号单一来源 `__version__`（pyproject 以 dynamic 读取）。
 
 ### 修复
 
