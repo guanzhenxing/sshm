@@ -30,7 +30,7 @@ pytest -k search             # 按名筛选
 1. 先写一个**失败测试**复现 bug，跑一次确认它按预期失败。
 2. 写最小修复让测试通过。
 3. 跑全量，确保不回归。
-4. 提交。详见 [CLAUDE.md](CLAUDE.md) 的「Critical TUI gotchas」，避免踩已知坑。
+4. 提交。详见 [架构与设计](docs/architecture.md) 的「TUI 架构」小节，避免踩已知坑。
 
 ## 提交规范
 
@@ -57,4 +57,3 @@ Conventional Commits，中文描述：
 ## 相关文档
 
 - [架构与设计](docs/architecture.md)
-- [CLAUDE.md](CLAUDE.md)（项目事实与坑）
