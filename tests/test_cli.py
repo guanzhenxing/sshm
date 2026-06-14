@@ -3,8 +3,10 @@
 import os
 import tempfile
 from unittest.mock import patch
+
 import pytest
-from sshm.cli import main, get_password
+
+from sshm.cli import get_password, main
 
 
 class TestGetPassword:

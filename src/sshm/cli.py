@@ -6,8 +6,8 @@ import os
 import sys
 import time
 
-from sshm.vault import Vault, ServerConfig
-from sshm.session import store_key, load_key, clear_key
+from sshm.session import clear_key, load_key
+from sshm.vault import ServerConfig, Vault
 
 
 def get_password(prompt: str = "Master password: ") -> str:
@@ -204,9 +204,10 @@ def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfi
 def run_tui():
     """启动 Textual TUI。"""
     import termios
-    from sshm.tui import SSHManagerApp
+
     from sshm.ssh import ssh_connect
-    from sshm.transfer import scp_upload, scp_download
+    from sshm.transfer import scp_download, scp_upload
+    from sshm.tui import SSHManagerApp
 
     parser = build_parser()
     args, _ = parser.parse_known_args()

@@ -4,13 +4,12 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Label, Button
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
-from sshm.vault import Vault, ServerConfig
 from sshm.session import load_key
-
+from sshm.vault import ServerConfig, Vault
 
 # ── 密码输入界面 ──────────────────────────────────────
 
@@ -126,14 +125,43 @@ class ServerForm(Screen):
         with Vertical():
             yield Label(title, id="form-title")
             yield Input(value=s.name if s else "", placeholder="名称 (必填)", id="f-name")
-            yield Input(value=s.host if s else "", placeholder="地址 (必填，IP 或域名)", id="f-host")
-            yield Input(value=str(s.port) if s and s.port != 22 else "", placeholder="端口 (默认 22)", id="f-port")
+            yield Input(
+                value=s.host if s else "",
+                placeholder="地址 (必填，IP 或域名)",
+                id="f-host",
+            )
+            yield Input(
+                value=str(s.port) if s and s.port != 22 else "",
+                placeholder="端口 (默认 22)",
+                id="f-port",
+            )
             yield Input(value=s.user if s else "", placeholder="用户名 (必填)", id="f-user")
-            yield Input(value=s.auth_type if s else "", placeholder="认证方式 (key 或 password)", id="f-auth")
-            yield Input(value=s.key_path if s and s.key_path else "", placeholder="密钥路径 (认证方式为 key 时必填)", id="f-keypath")
-            yield Input(value="***" if s and s.password else "", placeholder="密码 (认证方式为 password 时必填)", password=True, id="f-password")
-            yield Input(value=s.group if s and s.group else "", placeholder="分组 (可选)", id="f-group")
-            yield Input(value=s.notes if s and s.notes else "", placeholder="备注 (可选)", id="f-notes")
+            yield Input(
+                value=s.auth_type if s else "",
+                placeholder="认证方式 (key 或 password)",
+                id="f-auth",
+            )
+            yield Input(
+                value=s.key_path if s and s.key_path else "",
+                placeholder="密钥路径 (认证方式为 key 时必填)",
+                id="f-keypath",
+            )
+            yield Input(
+                value="***" if s and s.password else "",
+                placeholder="密码 (认证方式为 password 时必填)",
+                password=True,
+                id="f-password",
+            )
+            yield Input(
+                value=s.group if s and s.group else "",
+                placeholder="分组 (可选)",
+                id="f-group",
+            )
+            yield Input(
+                value=s.notes if s and s.notes else "",
+                placeholder="备注 (可选)",
+                id="f-notes",
+            )
             yield Label("", id="error-label")
             with Horizontal():
                 yield Button("保存", variant="success", id="btn-save")

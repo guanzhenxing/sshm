@@ -2,9 +2,9 @@
 
 import json
 import time
-from unittest.mock import patch, MagicMock
-import pytest
-from sshm.session import store_key, load_key, clear_key, DEFAULT_TTL
+from unittest.mock import MagicMock, patch
+
+from sshm.session import clear_key, load_key, store_key
 
 
 class TestStoreKey:

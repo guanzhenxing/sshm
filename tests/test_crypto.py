@@ -1,7 +1,11 @@
 """crypto 模块单元测试。"""
 
 import os
-from sshm.crypto import derive_key, encrypt, decrypt, SALT_SIZE, IV_SIZE, KDF_ITERATIONS
+
+import pytest
+from cryptography.exceptions import InvalidTag
+
+from sshm.crypto import IV_SIZE, SALT_SIZE, decrypt, derive_key, encrypt
 
 
 class TestDeriveKey:
@@ -43,9 +47,8 @@ class TestEncryptDecrypt:
         assert encrypted != plaintext
 
     def test_different_password_decrypt_fails(self):
-        import pytest
         encrypted = encrypt(b"secret data", "correct-password")
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTag):
             decrypt(encrypted, "wrong-password")
 
     def test_ciphertext_starts_with_salt_and_iv(self):
@@ -62,11 +65,10 @@ class TestEncryptDecrypt:
         assert decrypt(enc2, password) == plaintext
 
     def test_tampered_ciphertext_decrypt_fails(self):
-        import pytest
         encrypted = encrypt(b"important data", "password")
         tampered = bytearray(encrypted)
         tampered[-1] ^= 0xFF
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTag):
             decrypt(bytes(tampered), "password")
 
     def test_empty_plaintext(self):

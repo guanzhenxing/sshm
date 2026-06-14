@@ -1,7 +1,12 @@
 """vault 模块单元测试。"""
 
+import os
+import tempfile
+
 import pytest
-from sshm.vault import ServerConfig
+from cryptography.exceptions import InvalidTag
+
+from sshm.vault import ServerConfig, Vault
 
 
 class TestServerConfig:
@@ -23,15 +28,24 @@ class TestServerConfig:
 
     def test_missing_name_raises(self):
         with pytest.raises(ValueError, match="name is required"):
-            ServerConfig(name="", host="1.2.3.4", user="root", auth_type="key", key_path="/key")
+            ServerConfig(
+                name="", host="1.2.3.4", user="root",
+                auth_type="key", key_path="/key",
+            )
 
     def test_missing_host_raises(self):
         with pytest.raises(ValueError, match="host is required"):
-            ServerConfig(name="test", host="", user="root", auth_type="key", key_path="/key")
+            ServerConfig(
+                name="test", host="", user="root",
+                auth_type="key", key_path="/key",
+            )
 
     def test_invalid_port_raises(self):
         with pytest.raises(ValueError, match="invalid port"):
-            ServerConfig(name="test", host="1.2.3.4", user="root", auth_type="key", key_path="/key", port=99999)
+            ServerConfig(
+                name="test", host="1.2.3.4", user="root",
+                auth_type="key", key_path="/key", port=99999,
+            )
 
     def test_key_auth_without_key_path_raises(self):
         with pytest.raises(ValueError, match="key_path required"):
@@ -54,23 +68,23 @@ class TestServerConfig:
         assert server.key_path.startswith("/")
 
     def test_from_dict_does_not_mutate_input(self):
-        raw = {"name": "test", "host": "1.2.3.4", "user": "root", "auth_type": "key", "key_path": "~/.ssh/id_rsa"}
+        raw = {
+            "name": "test", "host": "1.2.3.4", "user": "root",
+            "auth_type": "key", "key_path": "~/.ssh/id_rsa",
+        }
         raw_copy = raw.copy()
         ServerConfig.from_dict(raw)
         assert raw == raw_copy
 
     def test_to_dict(self):
-        server = ServerConfig(name="test", host="1.2.3.4", user="root", auth_type="key", key_path="/key")
+        server = ServerConfig(
+            name="test", host="1.2.3.4", user="root",
+            auth_type="key", key_path="/key",
+        )
         d = server.to_dict()
         assert d["name"] == "test"
         assert d["port"] == 22
         assert isinstance(d, dict)
-
-
-import json
-import os
-import tempfile
-from sshm.vault import Vault
 
 
 class TestVault:
@@ -103,12 +117,15 @@ class TestVault:
 
     def test_wrong_password_load_fails(self):
         self.vault.init(self.password)
-        with pytest.raises(Exception):
+        with pytest.raises(InvalidTag):
             self.vault.load("wrong-password")
 
     def test_add_and_list_servers(self):
         self.vault.init(self.password)
-        server = ServerConfig(name="test", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        server = ServerConfig(
+            name="test", host="1.2.3.4", user="root",
+            auth_type="password", password="pass",
+        )
         self.vault.add_server(server, self.password)
         servers = self.vault.list_servers(self.password)
         assert len(servers) == 1
@@ -116,14 +133,20 @@ class TestVault:
 
     def test_remove_server_by_name(self):
         self.vault.init(self.password)
-        s = ServerConfig(name="to-delete", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        s = ServerConfig(
+            name="to-delete", host="1.2.3.4", user="root",
+            auth_type="password", password="pass",
+        )
         self.vault.add_server(s, self.password)
         self.vault.remove_server("to-delete", self.password)
         assert len(self.vault.list_servers(self.password)) == 0
 
     def test_remove_server_by_index(self):
         self.vault.init(self.password)
-        s = ServerConfig(name="first", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        s = ServerConfig(
+            name="first", host="1.2.3.4", user="root",
+            auth_type="password", password="pass",
+        )
         self.vault.add_server(s, self.password)
         self.vault.remove_server("1", self.password)
         assert len(self.vault.list_servers(self.password)) == 0
@@ -135,7 +158,10 @@ class TestVault:
 
     def test_edit_server(self):
         self.vault.init(self.password)
-        s = ServerConfig(name="edit-me", host="1.2.3.4", user="root", auth_type="password", password="pass")
+        s = ServerConfig(
+            name="edit-me", host="1.2.3.4", user="root",
+            auth_type="password", password="pass",
+        )
         self.vault.add_server(s, self.password)
         self.vault.edit_server("edit-me", {"host": "5.6.7.8", "port": 2222}, self.password)
         servers = self.vault.list_servers(self.password)
@@ -148,7 +174,10 @@ class TestVault:
 
     def test_vault_file_is_not_plaintext(self):
         self.vault.init(self.password)
-        s = ServerConfig(name="secret-server", host="10.0.0.1", user="admin", auth_type="password", password="hunter2")
+        s = ServerConfig(
+            name="secret-server", host="10.0.0.1", user="admin",
+            auth_type="password", password="hunter2",
+        )
         self.vault.add_server(s, self.password)
         with open(self.vault_path, "rb") as f:
             raw = f.read()

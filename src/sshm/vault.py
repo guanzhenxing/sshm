@@ -1,12 +1,12 @@
 """Vault 数据管理 — ServerConfig 数据类 + Vault 文件读写。"""
 
+import fcntl
 import json
 import os
-import fcntl
-from dataclasses import dataclass, asdict
-from typing import Literal, Optional
+from dataclasses import asdict, dataclass
+from typing import Literal
 
-from sshm.crypto import encrypt, decrypt
+from sshm.crypto import decrypt, encrypt
 
 
 @dataclass
@@ -18,8 +18,8 @@ class ServerConfig:
     user: str
     auth_type: Literal["key", "password"]
     port: int = 22
-    key_path: Optional[str] = None
-    password: Optional[str] = None
+    key_path: str | None = None
+    password: str | None = None
     group: str = ""
     notes: str = ""
 

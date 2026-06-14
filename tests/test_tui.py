@@ -31,9 +31,8 @@ from textual.dom import NoMatches
 from textual.widgets import DataTable, Footer, Input
 from textual.widgets._footer import FooterKey
 
-from sshm.tui import SSHManagerApp, MainScreen
+from sshm.tui import MainScreen, SSHManagerApp
 from sshm.vault import ServerConfig, Vault
-
 
 TEST_PASSWORD = "test-pw"
 
