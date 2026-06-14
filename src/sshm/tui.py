@@ -3,6 +3,7 @@
 import os
 from typing import ClassVar
 
+from cryptography.exceptions import InvalidTag
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -849,6 +850,8 @@ class SSHManagerApp(App):
             self.servers = self.vault.list_servers(self.password)
             self.close_form()
             self.notify(report.summary(), timeout=4)
+        except InvalidTag:
+            self._show_form_error("解密失败，密码错误")
         except Exception as e:
             self._show_form_error(f"导入失败：{e}")
 

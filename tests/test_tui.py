@@ -638,3 +638,35 @@ async def test_import_invalid_file_shows_error(monkeypatch):
             from sshm.tui import ImportForm
             assert isinstance(app.screen, ImportForm)
             assert app.screen.query_one("#error-label", Label).content
+
+
+async def test_import_wrong_password_shows_friendly_error(monkeypatch):
+    """加密文件 + 错的解密密码 → #error-label 显示'解密失败'，表单不关闭。"""
+    from sshm.io import write_export
+
+    with tempfile.TemporaryDirectory() as d:
+        path = _vault_with_server(d)
+        export_path = os.path.join(d, "enc.json")
+        write_export(
+            [ServerConfig(name="beta", host="2.2.2.2", port=22, user="root",
+                          auth_type="password", password="y")],
+            export_path, encrypt_password="correct-pw",
+        )
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        app = SSHManagerApp(vault_path=path)
+        async with app.run_test(size=TEST_SIZE) as pilot:
+            await _authenticate(pilot)
+            await pilot.press("i")
+            await pilot.pause()
+            await pilot.click("#if-path")
+            await pilot.press(*export_path)
+            await pilot.click("#if-password")
+            await pilot.press(*"wrong-pw")
+            await pilot.click("#btn-skip")
+            await pilot.pause()
+            from sshm.tui import ImportForm
+            # 仍在导入表单（未关闭）
+            assert isinstance(app.screen, ImportForm)
+            # 错误标签回显"解密失败"（而非空白的"导入失败："）
+            assert "解密失败" in str(app.screen.query_one("#error-label", Label).content)
