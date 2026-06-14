@@ -5,7 +5,7 @@
 ## 开发环境
 
 ```bash
-git clone <repo> && cd sshm
+git clone https://github.com/guanzhenxing/sshm.git && cd sshm
 pip install -e ".[dev]"      # 可编辑安装 + 开发依赖（pytest、pytest-asyncio）
 ```
 

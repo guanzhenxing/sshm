@@ -27,4 +27,4 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
-[0.1.0]: https://github.com/USERNAME/sshm/releases/tag/v0.1.0
+[0.1.0]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.0

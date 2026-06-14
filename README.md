@@ -2,7 +2,17 @@
   <h1>sshm</h1>
   <p><strong>S</strong>SH <strong>S</strong>erver <strong>M</strong>anager for macOS</p>
   <p>加密、可交互的 SSH 服务器管理 CLI —— 为 Mac 终端打造。</p>
+  <p>
+    <img alt="tests" src="https://github.com/guanzhenxing/sshm/actions/workflows/test.yml/badge.svg">
+    <img alt="license" src="https://img.shields.io/badge/license-MIT-blue.svg">
+    <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
+    <img alt="platform" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
+  </p>
 </div>
+
+<p align="center">
+  <img src="docs/images/tui.svg" alt="sshm 交互式 TUI" width="760">
+</p>
 
 <p align="center">
   <code>sshm</code> &nbsp;·&nbsp;
@@ -59,6 +69,7 @@ sshm
 - [架构与设计](docs/architecture.md) —— 模块划分与关键设计决策
 - [贡献指南](CONTRIBUTING.md) —— 开发环境、测试、提交规范
 - [更新日志](CHANGELOG.md)
+- [安全策略](SECURITY.md) —— 漏洞上报渠道
 
 ## 状态
 
