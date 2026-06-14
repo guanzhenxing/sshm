@@ -6,7 +6,10 @@ import os
 import sys
 import time
 
+from cryptography.exceptions import InvalidTag
+
 from sshm import __version__
+from sshm.io import EncryptedExportError, read_export, write_export
 from sshm.session import clear_password, load_password, store_password
 from sshm.vault import ServerConfig, Vault
 
@@ -198,11 +201,56 @@ def cmd_lock(args):
 
 def cmd_export(args):
     """处理 export 命令。"""
-    import json
     vault = Vault(args.vault)
     password = get_vault_password(args, vault)
-    data = vault.load(password)
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    servers = vault.list_servers(password)
+    encrypt_password = None
+    if args.encrypt:
+        if args.password:
+            encrypt_password = args.password
+        else:
+            encrypt_password = get_password("Export password: ")
+            confirm = get_password("Confirm export password: ")
+            if encrypt_password != confirm:
+                print("两次输入的导出密码不一致。")
+                sys.exit(1)
+    write_export(servers, args.output, encrypt_password)
+    if args.output:
+        kind = "加密" if encrypt_password else "明文"
+        print(f"已{kind}导出 {len(servers)} 台服务器到 {args.output}")
+
+
+def _read_import_file(args) -> list[ServerConfig]:
+    """读导入文件；遇加密但缺密码则交互提示。InvalidTag（错密码）向上抛由调用方处理。"""
+    decrypt_password = args.password
+    try:
+        return read_export(args.file, decrypt_password)
+    except EncryptedExportError:
+        decrypt_password = get_password("Export password: ")
+        return read_export(args.file, decrypt_password)
+
+
+def cmd_import(args):
+    """处理 import 命令。"""
+    vault = Vault(args.vault)
+    password = get_vault_password(args, vault)
+    try:
+        incoming = _read_import_file(args)
+    except InvalidTag:
+        print("解密失败，密码错误")
+        sys.exit(1)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"导入失败：{e}")
+        sys.exit(1)
+    report = vault.merge_servers(
+        incoming, args.strategy, password, dry_run=args.dry_run,
+    )
+    prefix = "（dry-run）" if args.dry_run else ""
+    print(f"{prefix}导入完成：{report.summary()}")
+    for name in report.skipped:
+        print(f"  skipped: {name}")
+    for old, new in report.renamed:
+        print(f"  renamed: {old} → {new}")
 
 
 def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfig:
@@ -299,7 +347,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("password", help="修改主密码")
     sub.add_parser("lock", help="清除 Keychain 会话缓存")
-    sub.add_parser("export", help="导出服务器配置 (JSON)")
+    p_exp = sub.add_parser("export", help="导出服务器配置 (JSON)")
+    p_exp.add_argument("-o", "--output", help="输出文件路径（不传则打到 stdout）")
+    p_exp.add_argument("--encrypt", action="store_true", help="用独立密码加密导出文件")
+    p_exp.add_argument("--password", help="加密密码（--encrypt 时不传则交互提示）")
+    p_imp = sub.add_parser("import", help="导入服务器配置 (JSON)")
+    p_imp.add_argument("file", help="导入文件路径（- 表示 stdin）")
+    strategy = p_imp.add_mutually_exclusive_group()
+    strategy.add_argument("--skip", action="store_const", dest="strategy", const="skip")
+    strategy.add_argument("--overwrite", action="store_const", dest="strategy", const="overwrite")
+    strategy.add_argument("--rename", action="store_const", dest="strategy", const="rename")
+    p_imp.set_defaults(strategy="skip")
+    p_imp.add_argument("--dry-run", action="store_true", help="只报告，不写盘")
+    p_imp.add_argument("--password", help="加密导出文件的解密密码（不传则交互提示）")
 
     return parser
 
@@ -329,6 +389,7 @@ def main():
         "password": cmd_password,
         "lock": cmd_lock,
         "export": cmd_export,
+        "import": cmd_import,
     }
 
     handler = commands.get(args.command)
