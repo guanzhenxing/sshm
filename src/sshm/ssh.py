@@ -29,12 +29,18 @@ def ssh_connect(server: ServerConfig) -> int:
         return _ssh_with_password(server)
 
 
-def _ssh_with_key(server: ServerConfig) -> int:
-    """密钥认证 SSH 连接。"""
+def _build_ssh_key_cmd(server: ServerConfig) -> list[str]:
+    """构建密钥认证的 ssh 命令行（与 transfer._build_scp_cmd 对称，便于单测）。"""
     cmd = ["ssh", "-o", f"Port={server.port}"] + _SSH_DEFAULT_OPTS
     if server.key_path:
         cmd.extend(["-i", server.key_path])
     cmd.append(f"{server.user}@{server.host}")
+    return cmd
+
+
+def _ssh_with_key(server: ServerConfig) -> int:
+    """密钥认证 SSH 连接。"""
+    cmd = _build_ssh_key_cmd(server)
 
     print(f"Connecting to {server.user}@{server.host}:{server.port} ...")
     sys.stdout.flush()
