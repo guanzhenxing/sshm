@@ -3,7 +3,7 @@
 import fcntl
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from sshm.crypto import decrypt, encrypt
@@ -49,6 +49,23 @@ class ServerConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class MergeReport:
+    """merge_servers 的合并结果摘要。"""
+    added: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    overwritten: list[str] = field(default_factory=list)
+    renamed: list[tuple[str, str]] = field(default_factory=list)
+    total_in: int = 0
+
+    def summary(self) -> str:
+        return (
+            f"新增 {len(self.added)}，跳过 {len(self.skipped)}，"
+            f"覆盖 {len(self.overwritten)}，重命名 {len(self.renamed)}"
+            f"（共 {self.total_in} 条）"
+        )
 
 
 VAULT_VERSION = 1
@@ -135,3 +152,61 @@ class Vault:
         data["servers"][idx].update(updates)
         ServerConfig.from_dict(data["servers"][idx])
         self.save(data, password)
+
+    def merge_servers(
+        self,
+        incoming: list[ServerConfig],
+        strategy: str,
+        password: str,
+        *,
+        dry_run: bool = False,
+    ) -> "MergeReport":
+        """按策略合并 incoming 到当前 vault，单次 save（原子）。
+
+        strategy ∈ {"skip","overwrite","rename"}；dry_run 不落盘。
+        唯一业务键 = name。
+        """
+        if strategy not in ("skip", "overwrite", "rename"):
+            raise ValueError(f"未知合并策略：{strategy}")
+        data = self.load(password)
+        final: list[dict] = list(data.get("servers", []))
+        by_name: dict[str, dict] = {s["name"]: s for s in final}
+        report = MergeReport(total_in=len(incoming))
+
+        for inc in incoming:
+            inc_d = inc.to_dict()
+            name = inc_d["name"]
+            if name not in by_name:
+                final.append(inc_d)
+                by_name[name] = inc_d
+                report.added.append(name)
+                continue
+
+            if strategy == "skip":
+                report.skipped.append(name)
+            elif strategy == "overwrite":
+                for i, s in enumerate(final):
+                    if s["name"] == name:
+                        final[i] = inc_d
+                        break
+                by_name[name] = inc_d
+                report.overwritten.append(name)
+            elif strategy == "rename":
+                new_name = self._next_available_name(name, by_name)
+                inc_d["name"] = new_name
+                final.append(inc_d)
+                by_name[new_name] = inc_d
+                report.renamed.append((name, new_name))
+
+        if not dry_run:
+            data["servers"] = final
+            self.save(data, password)
+        return report
+
+    @staticmethod
+    def _next_available_name(name: str, by_name: dict[str, dict]) -> str:
+        """碰撞时生成 name-2 / name-3 … 直到空出（含已重命名的占用）。"""
+        i = 2
+        while f"{name}-{i}" in by_name:
+            i += 1
+        return f"{name}-{i}"

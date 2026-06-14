@@ -183,3 +183,68 @@ class TestVault:
             raw = f.read()
         assert b"secret-server" not in raw
         assert b"hunter2" not in raw
+
+
+class TestMergeServers:
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.vault_path = os.path.join(self.tmpdir, "vault.enc")
+        self.vault = Vault(self.vault_path)
+        self.password = "test-master-password"
+        self.vault.init(self.password)
+        self.vault.add_server(
+            ServerConfig(name="alpha", host="1.1.1.1", user="root",
+                         auth_type="password", password="x"),
+            self.password,
+        )
+
+    def _import_list(self, names):
+        return [
+            ServerConfig(name=n, host="9.9.9.9", user="root",
+                         auth_type="password", password="x")
+            for n in names
+        ]
+
+    def test_skip_strategy_keeps_existing(self):
+        report = self.vault.merge_servers(
+            self._import_list(["alpha", "beta"]), "skip", self.password,
+        )
+        assert report.added == ["beta"]
+        assert report.skipped == ["alpha"]
+        names = [s.name for s in self.vault.list_servers(self.password)]
+        assert names == ["alpha", "beta"]
+
+    def test_overwrite_strategy_replaces(self):
+        incoming = [
+            ServerConfig(name="alpha", host="5.5.5.5", port=2222, user="admin",
+                         auth_type="password", password="new"),
+        ]
+        report = self.vault.merge_servers(incoming, "overwrite", self.password)
+        assert report.overwritten == ["alpha"]
+        servers = self.vault.list_servers(self.password)
+        assert len(servers) == 1
+        assert servers[0].host == "5.5.5.5"
+        assert servers[0].port == 2222
+
+    def test_rename_strategy_avoids_collision(self):
+        incoming = self._import_list(["alpha", "alpha"])
+        report = self.vault.merge_servers(incoming, "rename", self.password)
+        # 第一台 alpha 碰撞 → alpha-2；第二台 alpha 碰撞 → alpha-3
+        assert report.renamed == [("alpha", "alpha-2"), ("alpha", "alpha-3")]
+        names = sorted(s.name for s in self.vault.list_servers(self.password))
+        assert names == ["alpha", "alpha-2", "alpha-3"]
+
+    def test_dry_run_does_not_persist(self):
+        report = self.vault.merge_servers(
+            self._import_list(["beta"]), "skip", self.password, dry_run=True,
+        )
+        assert report.added == ["beta"]
+        # dry-run 不落盘：vault 里仍只有 alpha
+        names = [s.name for s in self.vault.list_servers(self.password)]
+        assert names == ["alpha"]
+
+    def test_unknown_strategy_raises(self):
+        with pytest.raises(ValueError, match="未知合并策略"):
+            self.vault.merge_servers(
+                self._import_list(["beta"]), "bogus", self.password,
+            )
