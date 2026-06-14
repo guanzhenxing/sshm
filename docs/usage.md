@@ -8,7 +8,7 @@
 | `--no-cache` | 跳过 Keychain 会话缓存，每次都提示输入主密码 |
 | `-h`, `--help` | 显示帮助并退出 |
 
-**会话缓存：** 主密码派生的 AES 密钥缓存在 macOS Keychain，TTL 固定 3600 秒（`session.py` 的 `DEFAULT_TTL`）。用 `sshm lock` 立即清除；用 `--no-cache` 跳过缓存、每次都提示。
+**会话缓存：** 主密码缓存在 macOS Keychain，TTL 固定 3600 秒（`session.py` 的 `DEFAULT_TTL`）。用 `sshm lock` 立即清除；用 `--no-cache` 跳过缓存、每次都提示。
 
 ## 交互式 TUI（`sshm`，无参数）
 

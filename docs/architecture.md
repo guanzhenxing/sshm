@@ -19,7 +19,7 @@
 | [`cli.py`](../src/sshm/cli.py) | argparse 命令解析与路由；`run_tui()` 启动 TUI 并按返回值分发 |
 | [`crypto.py`](../src/sshm/crypto.py) | AES-256-GCM 加解密 + PBKDF2 派生密钥 |
 | [`vault.py`](../src/sshm/vault.py) | `ServerConfig` 数据类 + 加密 vault 读写 + fcntl 文件锁 |
-| [`session.py`](../src/sshm/session.py) | Keychain 会话缓存（存/取/清派生密钥，TTL） |
+| [`session.py`](../src/sshm/session.py) | Keychain 会话缓存（存/取/清主密码，TTL） |
 | [`ssh.py`](../src/sshm/ssh.py) | 基于 pty 的 SSH 连接（密钥 / 密码认证） |
 | [`transfer.py`](../src/sshm/transfer.py) | SCP 上传 / 下载 |
 | [`tui.py`](../src/sshm/tui.py) | Textual 交互式 TUI（见下文「TUI 架构」） |
@@ -86,15 +86,17 @@ vault.enc = Salt(16B) || IV(12B) || ciphertext(变长) || auth tag(16B)
 
 ## 会话缓存（Keychain）
 
-派生的 AES 密钥缓存进 macOS Keychain，带 TTL（固定 3600 秒）：
+主密码缓存进 macOS Keychain，带 TTL（固定 3600 秒）：
 
 ```
-首次运行:   主密码 -> 派生密钥 -> 存 {key, expires_at} 进 Keychain
-后续运行:   查 Keychain -> 未过期? 跳过提示. 过期? 重新提示.
+首次运行:   主密码 -> (vault.load 校验通过) -> 存 {password, expires_at} 进 Keychain
+后续运行:   查 Keychain -> 未过期且能解 vault? 跳过提示. 失效? 清掉、重新提示.
 sshm lock:  从 Keychain 删除
 ```
 
-**安全说明：** Keychain 项可被同用户进程免认证读取——任何以该用户身份运行的程序都能 `security find-generic-password -a sshm -w` 读到缓存的 AES 密钥。这与 SSH agent / GPG agent 的信任模型一致。实现见 [`session.py`](../src/sshm/session.py)。
+写入只发生在认证成功之后（CLI 的 `get_vault_password` 用 `vault.load` 校验通过后、TUI 的 `do_authenticate` 列出服务器成功后），所以误输的密码不会被缓存；缓存失效（密码已改）时会在下一次成功认证时自愈覆盖。
+
+**为何缓存主密码而非派生 AES 密钥：** vault 每次操作都从「主密码 + vault 内 salt」现派生密钥，应用全程持有主密码——缓存主密码与现有架构一致、消费方零改动。同用户进程能免认证读 Keychain，故二者在本工具的本地威胁模型下等价：拿到派生密钥可直接解密 vault；拿到主密码 + vault 文件头里的 salt 同样能派生出来。安全说明与 SSH agent / GPG agent 的信任模型一致。实现见 [`session.py`](../src/sshm/session.py)。
 
 ## TUI 架构
 
