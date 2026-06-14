@@ -346,3 +346,73 @@ async def test_transfer_footer_shows_cancel(app_with_vault):
         descs = _footer_descriptions(app)
         assert "取消" in descs
         assert "添加" not in descs
+
+
+# ── 8. 搜索行为修正(重构前遗留 bug 的回归用例) ──────────────
+#
+# 两个遗留 bug(重构前就存在,本次一并修掉):
+#  (B1) 过滤后选中错位:_refresh_table 渲染的是"过滤后"列表,但 _get_selected_server
+#       用 cursor_row 去索引"未过滤"的 app.servers —— 搜索时选中的/连接的/删除的
+#       不是表格里看到的那台。
+#  (B2) 搜索焦点陷阱:进入搜索后所有字母键都被搜索框吃掉,只能 esc 退出,无法
+#       "提交查询后在过滤结果上继续操作"。修正:Enter 提交查询(保留过滤、把焦点
+#       还给主屏),Esc 取消(清空、回到全量)。
+
+@pytest.fixture
+def app_with_three_servers(monkeypatch):
+    """临时 vault(含 alpha/bravo/charlie 三台),用于过滤后选中行的测试。"""
+    servers = [
+        ServerConfig(name="alpha", host="1.1.1.1", port=22, user="root",
+                     auth_type="password", password="x"),
+        ServerConfig(name="bravo", host="2.2.2.2", port=22, user="root",
+                     auth_type="password", password="x"),
+        ServerConfig(name="charlie", host="3.3.3.3", port=22, user="root",
+                     auth_type="password", password="x"),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "vault.enc")
+        vault = Vault(path)
+        vault.init(TEST_PASSWORD)
+        for s in servers:
+            vault.add_server(s, TEST_PASSWORD)
+        monkeypatch.setattr("sshm.session.load_key", lambda: None)
+        app = SSHManagerApp(vault_path=path)
+        yield app
+
+
+async def test_get_selected_server_reflects_filtered_list(app_with_three_servers):
+    """(B1) 搜索 'charlie' 后表格只剩 charlie(cursor_row=0),
+    _get_selected_server 应返回 charlie,而不是未过滤列表里的 alpha。"""
+    app = app_with_three_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+
+        await pilot.click("#search-input")
+        await pilot.press(*"charlie")
+        await pilot.pause()
+
+        main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
+        selected = main._get_selected_server()
+        assert selected is not None
+        assert selected.name == "charlie"
+
+
+async def test_search_enter_commits_filter_and_defocuses(app_with_three_servers):
+    """(B2) 搜索框输入后按 Enter 应"提交"查询:焦点离开搜索框(主屏绑定重新可用),
+    且过滤结果保留。重构前 Enter 在搜索框里是空操作,焦点被困住。"""
+    app = app_with_three_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+
+        await pilot.click("#search-input")
+        await pilot.press(*"charlie")
+        await pilot.press("enter")   # 提交查询
+        await pilot.pause()
+
+        main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
+        search = main.query_one("#search-input", Input)
+        # 焦点已离开搜索框 → a/d/enter 等主屏绑定重新可用。
+        assert not search.has_focus
+        # 过滤结果仍保留(charlie 可见、alpha 被过滤掉)。
+        assert _row_contains(_table(app), "charlie")
+        assert not _row_contains(_table(app), "alpha")

@@ -332,6 +332,13 @@ class TransferForm(Screen):
 class MainScreen(Screen):
     """主列表页:搜索 + 服务器表格。"""
 
+    def __init__(self) -> None:
+        super().__init__()
+        # 表格当前渲染的(可能已过滤)服务器列表,与可见行一一对应。
+        # _get_selected_server 据此把 cursor_row 映射回正确的服务器,而不再去索引
+        # 未过滤的 app.servers —— 后者在搜索时会让"选中/连接/删除的不是看到的那台"。
+        self._filtered_servers: list[ServerConfig] = []
+
     # 禁用本屏自动聚焦 → 焦点保持为 None:
     #  (1) Screen._update_auto_focus 因 auto_focus 为空而跳过,pop_screen 回到本屏时
     #      不会把焦点落到第一个可聚焦控件 (#search-input);
@@ -377,38 +384,49 @@ class MainScreen(Screen):
         table.cursor_type = "row"
         table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
 
-    def _refresh_table(self, filter_text: str = "") -> None:
+    def _refresh_table(self) -> None:
         app = self.app
         assert isinstance(app, SSHManagerApp)
         table = self.query_one("#main-table", DataTable)
+        # 搜索框是过滤的唯一真相源:读取它的当前值来渲染匹配项。这样表格内容与
+        # 搜索框文本永远一致 —— 添加/编辑/删除后重新刷新也遵循同一过滤,不会出现
+        # "框里有查询、表格却显示全量"的脱节。
+        filter_text = self.query_one("#search-input", Input).value.strip().lower()
+        self._filtered_servers = (
+            app.servers if not filter_text
+            else [s for s in app.servers
+                  if filter_text in s.name.lower() or filter_text in s.host.lower()]
+        )
         table.clear()
-        filtered = app.servers
-        if filter_text:
-            ft = filter_text.lower()
-            filtered = [s for s in app.servers
-                        if ft in s.name.lower() or ft in s.host.lower()]
-        if not filtered:
+        if not self._filtered_servers:
             if not app.servers:
                 table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
             else:
                 table.add_row("", "(no match)", "", "", "", "")
             return
-        for i, s in enumerate(filtered, 1):
+        for i, s in enumerate(self._filtered_servers, 1):
             auth_label = "key" if s.auth_type == "key" else "pwd"
             table.add_row(str(i), s.name, s.host, s.user, auth_label, s.group)
 
     def _get_selected_server(self) -> ServerConfig | None:
         table = self.query_one("#main-table", DataTable)
         row = table.cursor_row
-        app = self.app
-        assert isinstance(app, SSHManagerApp)
-        if row is None or row >= len(app.servers):
+        # cursor_row 是"可见行"的下标,而可见行 == _filtered_servers,二者同源。
+        if row is None or row < 0 or row >= len(self._filtered_servers):
             return None
-        return app.servers[row]
+        return self._filtered_servers[row]
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-input":
-            self._refresh_table(event.value)
+            self._refresh_table()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search-input":
+            # 提交查询:保留当前过滤结果(表格仍只显示匹配项),把焦点还给主屏,
+            # 使 a/e/d/enter/u/x 等主屏绑定能在过滤结果上直接生效,而非被困在
+            # 搜索框里。Input 把 enter 绑定为 submit(触发本消息)、不绑定 escape,
+            # 故 esc 仍走 action_unfocus_search 清空查询、回到全量列表。
+            self.set_focus(None)
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()
