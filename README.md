@@ -1,7 +1,7 @@
 <div align="center">
   <h1>sshm</h1>
   <p><strong>S</strong>SH <strong>S</strong>erver <strong>M</strong>anager for macOS</p>
-  <p>Encrypted, interactive CLI for managing and connecting to SSH servers — built for the Mac terminal.</p>
+  <p>加密、可交互的 SSH 服务器管理 CLI —— 为 Mac 终端打造。</p>
 </div>
 
 <p align="center">
@@ -13,54 +13,57 @@
 
 ---
 
-## Overview
+## 简介
 
-sshm is a macOS-native SSH server management CLI. It fills the gap for developers who manage a handful of servers with mixed key/password authentication and want an experience similar to WinTerm on Windows — but with **encrypted credential storage**.
+sshm 是一个 macOS 原生的 SSH 服务器管理 CLI。它面向「管理少量服务器、认证方式混用（密钥 / 密码）、想要类似 Windows 上 WinTerm 的体验、同时要求**凭据加密存储**」的开发者。
 
-### Features
+### 特性
 
-- **Encrypted vault** — Server credentials are encrypted at rest with AES-256-GCM.
-- **Interactive TUI** — Browse, search, filter, and connect to servers with arrow keys (powered by [Rich](https://github.com/Textualize/rich)).
-- **System SSH** — Uses macOS's native `ssh` and `scp` commands. Full terminal emulation, SSH agent forwarding, and `~/.ssh/config` support work out of the box.
-- **Mixed auth** — Supports both key-based and password-based authentication per server. Password auth uses Python's `pty` module — no external tools like `sshpass` needed.
-- **Session caching** — AES key cached in macOS Keychain after first unlock; subsequent invocations skip the password prompt.
-- **File transfer** — Upload and download files via SCP.
+- **加密保险库** —— 服务器凭据用 AES-256-GCM 加密落盘。
+- **交互式 TUI** —— 方向键浏览、搜索、过滤、连接服务器（基于 [Textual](https://github.com/Textualize/textual)）。
+- **系统 SSH** —— 直接调用 macOS 自带的 `ssh` / `scp`：完整终端仿真、SSH agent 转发、`~/.ssh/config` 开箱即用。
+- **混合认证** —— 每台服务器可选密钥或密码认证。密码认证用 Python 的 `pty`，**无需 sshpass**。
+- **会话缓存** —— 首次解锁后，派生的 AES 密钥缓存在 macOS Keychain，后续调用免输主密码。
+- **文件传输** —— 通过 SCP 上传 / 下载。
 
-## Quick Start
-
-```bash
-# Install
-git clone https://github.com/your-org/sshm.git && cd sshm
-pip3 install -r requirements.txt
-
-# Initialize the vault (you'll be prompted for a master password)
-python3 -m sshm init
-
-# Add your first server
-python3 -m sshm add
-
-# Launch the interactive TUI (master password cached in Keychain after first use)
-python3 -m sshm
-```
-
-For convenience, add an alias to your shell:
+## 快速开始
 
 ```bash
-echo 'alias sshm="python3 /path/to/sshm"' >> ~/.zshrc
+# 安装（二选一）
+pip install -e .                 # 可编辑安装，提供 sshm 命令
+./install.sh                     # 或安装 wrapper 到 /usr/local/bin（用项目 .venv）
+
+# 初始化加密保险库（会提示设置主密码）
+sshm init
+
+# 添加第一台服务器
+sshm add
+
+# 启动交互式 TUI（首次输入主密码后缓存到 Keychain）
+sshm
 ```
 
-## Requirements
+> `sshm` 是 `pyproject.toml` 声明的 console script（入口 `sshm.cli:main`），等效于 `python -m sshm`。
 
-- macOS (tested on Ventura / Sonoma / Sequoia)
+## 环境要求
+
+- macOS（Ventura / Sonoma / Sequoia 均可）
 - Python 3.10+
-- `ssh` and `scp` (pre-installed on macOS)
+- `ssh` 和 `scp`（macOS 自带）
 
-No other external dependencies. `sshpass` is **not** required — password-based auth uses Python's built-in `pty` module.
+无需其它外部依赖，**不需要 sshpass**——密码认证用 Python 内置的 `pty` 模块。
 
-## Project Status
+## 文档
 
-Active development. The project is in its initial implementation phase.
+- [使用指南](docs/usage.md) —— 每个子命令的用法
+- [架构与设计](docs/architecture.md) —— 模块划分与关键设计决策
+- [贡献指南](CONTRIBUTING.md) —— 开发环境、测试、提交规范
+- [更新日志](CHANGELOG.md)
 
-## License
+## 状态
+
+开发中，当前版本 0.1.0。
+
+## 许可证
 
 MIT

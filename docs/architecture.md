@@ -1,464 +1,116 @@
-# Architecture
+# 架构与设计
 
-## Directory Layout
+本文档面向想读懂或修改 sshm 代码的贡献者。用户视角的用法见 [usage.md](usage.md)。
+
+## 模块划分
+
+运行期数据目录：
 
 ```
-~/.sshm/                    # Runtime data directory
-└── vault.enc               # Single file: salt || IV || ciphertext || auth tag
-
-sshm/                       # Application package
-├── __main__.py             # Entry point (python -m sshm)
-├── cli.py                  # Command parsing and routing
-├── crypto.py               # Encryption/decryption (AES-256-GCM + PBKDF2)
-├── vault.py                # Configuration file read/write with validation + file locking
-├── ui.py                   # Rich interactive interface with search
-├── ssh.py                  # SSH connection via pty (no sshpass)
-├── transfer.py             # SCP file transfer
-├── session.py              # macOS Keychain session cache with TTL
-└── requirements.txt        # Dependencies: rich, cryptography
+~/.sshm/
+└── vault.enc        # 单文件：salt || IV || ciphertext || auth tag
 ```
 
-## Tech Stack Rationale
+源码包 `src/sshm/`：
 
-| Approach | Encryption | Interactive UI | Dev Speed | Best For |
+| 文件 | 职责 |
+|---|---|
+| [`__main__.py`](../src/sshm/__main__.py) | 入口：`python -m sshm` → `cli.main` |
+| [`cli.py`](../src/sshm/cli.py) | argparse 命令解析与路由；`run_tui()` 启动 TUI 并按返回值分发 |
+| [`crypto.py`](../src/sshm/crypto.py) | AES-256-GCM 加解密 + PBKDF2 派生密钥 |
+| [`vault.py`](../src/sshm/vault.py) | `ServerConfig` 数据类 + 加密 vault 读写 + fcntl 文件锁 |
+| [`session.py`](../src/sshm/session.py) | Keychain 会话缓存（存/取/清派生密钥，TTL） |
+| [`ssh.py`](../src/sshm/ssh.py) | 基于 pty 的 SSH 连接（密钥 / 密码认证） |
+| [`transfer.py`](../src/sshm/transfer.py) | SCP 上传 / 下载 |
+| [`tui.py`](../src/sshm/tui.py) | Textual 交互式 TUI（见下文「TUI 架构」） |
+
+## 技术选型
+
+| 方案 | 加密 | 交互 UI | 开发速度 | 适用 |
 |---|---|---|---|---|
-| Shell + fzf | Awkward (openssl) | Depends on fzf | Medium | No encryption needs |
-| **Python + Rich** | **Mature (cryptography)** | **Built-in, no deps** | **High** | **Encrypted + <= 30 servers** |
-| Go + BubbleTea | Extra impl needed | Built-in | Medium | Large-scale / commercial |
+| Shell + fzf | 别扭（openssl） | 依赖 fzf | 中 | 无加密需求 |
+| **Python + Textual** | **成熟（cryptography）** | **内置、零额外依赖** | **高** | **加密 + ≤ 几十台服务器** |
+| Go + BubbleTea | 需额外实现 | 内置 | 中 | 大规模 / 商用 |
 
-Python was chosen as the best balance given the hard requirement for encrypted storage. macOS ships with `python3`, so no extra runtime is needed.
+Python 在「必须加密」这一硬需求下综合最佳；macOS 自带 `python3`，无需额外运行时。TUI 选 Textual 而非纯 Rich——Rich 无法实现键盘导航和实时搜索。
 
-## SSH Connection Strategy
+## SSH 连接策略
 
-### Why system ssh
+**为何用系统 ssh 而非 paramiko：** 直接 shell out 到系统 `ssh`/`scp`，获得完整终端仿真（颜色、`htop`/`vim` 等 TUI 程序）、SSH agent 转发、对 `~/.ssh/config` 的尊重，且无需重造 SSH 协议。
 
-sshm shells out to the system `ssh` and `scp` commands instead of using a Python SSH library (paramiko). This gives:
+**密码认证用 pty 而非 sshpass：** 用 Python 标准库 `pty` 消除 sshpass 依赖。实现（[`ssh.py`](../src/sshm/ssh.py)）处理三个阶段：监听 SSH 输出检测 `password:` 提示 → 注入密码并验证未被拒 → 认证后双向中继用户终端与 SSH 会话。关键约束：
 
-- Full terminal emulation (colors, interactive commands, TUI programs like `htop`/`vim`)
-- SSH agent forwarding works without extra configuration
-- Existing `~/.ssh/config` entries are respected
-- No need to reimplement SSH protocol handling
+- 认证前只监听 SSH 输出 fd，不监听 stdin（否则用户误按键会让 `select` 空转）。
+- 远端 MOTD/banner 在认证期间缓冲，登录成功后一并刷出，避免空白屏。
+- 密码提示检测 30 秒超时；超时则输出缓冲内容 + 诊断信息。
+- 发出密码后短暂 peek（0.3s sleep + 0.5s select）判断是立即重提示（密码错）还是继续（认证成功）。
 
-### Key-based auth
+已知限制：仅支持 keyboard-interactive 且提示非标准的服务器会超时，错误信息会引导用户手动测试连通性。
 
-```python
-subprocess.run(["ssh", "-o", f"Port={port}", "-i", key_path, f"{user}@{host}"])
-```
+## 加密方案
 
-### Password-based auth (pty)
-
-Using Python's stdlib `pty` module eliminates the `sshpass` dependency. The implementation handles three phases:
-
-1. **Password prompt detection** — relay SSH output, watch for `password:` prompt
-2. **Password injection** — send password when prompt detected, verify it wasn't rejected
-3. **Interactive relay** — bidirectional I/O between user terminal and SSH session
-
-Key constraints:
-- Before auth: only listen to SSH output (fd), not stdin. If stdin were monitored before auth and the user accidentally pressed a key, select would spin in a busy loop.
-- Remote MOTD/banner is buffered during auth, then flushed to stdout after successful login. This prevents the user from seeing a blank screen.
-- 30-second timeout on password prompt detection. If it expires, the buffered output is displayed along with a diagnostic message.
-- After password is sent, a brief peek (0.3s sleep + 0.5s select) detects whether SSH immediately re-prompts (wrong password) or continues (auth OK).
-
-```python
-import pty, os, select, sys, signal, termios, tty, time
-
-def ssh_with_password(host: str, port: int, user: str, password: str) -> int:
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvp("ssh", [
-            "ssh", "-o", f"Port={port}", f"{user}@{host}",
-        ])
-        os._exit(1)
-
-    authenticated = False
-    banner = b""
-
-    try:
-        old_attrs = termios.tcgetattr(sys.stdin)
-    except termios.error:
-        old_attrs = None
-
-    try:
-        if old_attrs is not None:
-            tty.setraw(sys.stdin.fileno())
-
-        def _sigwinch(*_):
-            try:
-                pty.tcsetwinsize(fd, termios.tcgetwinsize(sys.stdin))
-            except Exception:
-                pass
-        signal.signal(signal.SIGWINCH, _sigwinch)
-
-        while True:
-            sources = [fd]
-            if authenticated:
-                sources.append(sys.stdin)
-
-            rlist, _, _ = select.select(sources, [], [], 30)
-
-            if not rlist:
-                if not authenticated:
-                    if banner:
-                        os.write(sys.stdout.fileno(), banner)
-                    raise TimeoutError(
-                        f"No password prompt from {user}@{host} within 30s."
-                    )
-                continue
-
-            if fd in rlist:
-                try:
-                    data = os.read(fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
-
-                if not authenticated:
-                    banner += data
-                    if b"password:" in banner.lower():
-                        os.write(fd, password.encode("utf-8") + b"\n")
-
-                        # Peek for immediate re-prompt (wrong password)
-                        time.sleep(0.3)
-                        r2, _, _ = select.select([fd], [], [], 0.5)
-                        if r2:
-                            check = os.read(fd, 1024)
-                            banner += check
-                            rejected = (
-                                b"password:" in check.lower()
-                                or b"denied" in check.lower()
-                                or b"failed" in check.lower()
-                            )
-                            if rejected:
-                                os.write(sys.stdout.fileno(), banner)
-                                raise PermissionError(
-                                    f"Authentication failed for {user}@{host}"
-                                )
-
-                        authenticated = True
-                        os.write(sys.stdout.fileno(), banner)
-                else:
-                    os.write(sys.stdout.fileno(), data)
-
-            if sys.stdin in rlist and authenticated:
-                try:
-                    key = os.read(sys.stdin.fileno(), 4096)
-                except OSError:
-                    break
-                if not key:
-                    break
-                os.write(fd, key)
-
-    except (TimeoutError, PermissionError):
-        os.waitpid(pid, os.WNOHANG)
-        return 1
-    finally:
-        if old_attrs is not None:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
-            except termios.error:
-                pass
-
-    _, status = os.waitpid(pid, 0)
-    return status
-```
-
-Known limitation: servers that exclusively use keyboard-interactive authentication with a non-standard prompt will time out. The error message guides the user to test connectivity manually.
-
-### SCP port parameter
-
-`ssh` uses lowercase `-p`, `scp` uses uppercase `-P`. The code must handle both:
-
-```python
-def build_scp_cmd(server, src, dst):
-    cmd = ["scp"]
-    cmd.extend(["-P", str(server.port)])
-    # ...
-```
-
-## Encryption Scheme
-
-### Single-file vault
-
-Salt is embedded directly into the vault file:
+**单文件 vault：** salt 直接嵌在 vault 文件头。
 
 ```
-vault.enc layout:
-+----------+----------+--------------+------------+
-| Salt     | IV       | Ciphertext   | Auth Tag   |
-| 16 bytes | 12 bytes | variable     | 16 bytes   |
-+----------+----------+--------------+------------+
+vault.enc = Salt(16B) || IV(12B) || ciphertext(变长) || auth tag(16B)
+主密码 --PBKDF2-SHA256(600k 轮)--> 256-bit AES 密钥
 ```
 
-### Algorithm
-
-```
-Master Password -> PBKDF2-SHA256 (600,000 iterations) -> 256-bit AES Key
-```
-
-| Component | Detail | Rationale |
+| 组件 | 细节 | 理由 |
 |---|---|---|
-| Cipher | AES-256-GCM | Authenticated encryption -- confidentiality + integrity |
-| KDF | PBKDF2-SHA256, 600K iterations | OWASP 2023 recommended minimum |
-| Salt | Random 16 bytes, embedded in vault | Prevents rainbow tables; single-file |
-| IV | Random 12 bytes, per encryption | GCM standard nonce size |
-| Auth tag | 16 bytes (GCM default) | Detects any tampering |
+| 加密 | AES-256-GCM | 带认证的加密——机密性 + 完整性 |
+| KDF | PBKDF2-SHA256，600k 轮 | OWASP 2023 推荐下限 |
+| Salt | 随机 16 字节，嵌在 vault | 防彩虹表；单文件 |
+| IV | 随机 12 字节，每次加密新生成 | GCM 标准 nonce 长度 |
+| 认证标签 | 16 字节（GCM 默认） | 检测任何篡改 |
 
-### Code structure
+**安全：** 密文离开主密码不可读；GCM 标签检测篡改；解密后数据仅存在于进程内存、退出即弃（Python 字符串无法可靠清零，对本地 CLI 可接受）。解出的 JSON 含 `version` 字段，版本号超出支持范围时拒绝解密。实现见 [`crypto.py`](../src/sshm/crypto.py)。
 
-```python
-import os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-
-SALT_SIZE = 16
-IV_SIZE = 12
-KDF_ITERATIONS = 600_000
-
-def derive_key(password: str, salt: bytes) -> bytes:
-    return PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=KDF_ITERATIONS,
-    ).derive(password.encode("utf-8"))
-
-def encrypt(plaintext: bytes, password: str) -> bytes:
-    salt = os.urandom(SALT_SIZE)
-    key = derive_key(password, salt)
-    iv = os.urandom(IV_SIZE)
-    aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(iv, plaintext, None)
-    return salt + iv + ciphertext
-
-def decrypt(data: bytes, password: str) -> bytes:
-    salt = data[:SALT_SIZE]
-    iv = data[SALT_SIZE:SALT_SIZE + IV_SIZE]
-    ciphertext = data[SALT_SIZE + IV_SIZE:]
-    key = derive_key(password, salt)
-    aesgcm = AESGCM(key)
-    return aesgcm.decrypt(iv, ciphertext, None)
-```
-
-### Security
-
-- Confidentiality: Ciphertext is opaque without the master password.
-- Integrity: GCM authentication tag detects tampering.
-- Decrypted data lives only in process memory, discarded on exit. Python strings cannot be reliably zeroed; this risk is acceptable for a local CLI tool.
-- Vault format versioning: decoded JSON contains a "version" field. If the version exceeds what the tool supports, decryption is refused.
-
-### Configuration Format (decrypted JSON)
+**配置格式（解密后的 JSON）：**
 
 ```json
 {
   "version": 1,
   "servers": [
-    {
-      "name": "staging-db",
-      "host": "10.0.0.50",
-      "port": 2222,
-      "user": "deploy",
-      "auth_type": "password",
-      "password": "my-secret-password",
-      "group": "staging",
-      "notes": ""
-    }
+    {"name": "staging-db", "host": "10.0.0.50", "port": 2222, "user": "deploy",
+     "auth_type": "password", "password": "...", "group": "staging", "notes": ""}
   ]
 }
 ```
 
-The entire JSON is encrypted inside vault.enc. The `password` field stores the server's plaintext password -- vault-level AES-256-GCM protects it at rest. No double encryption.
+整个 JSON 加密进 `vault.enc`。`password` 字段存服务器明文密码——由 vault 级 AES-256-GCM 保护落盘，不做二次加密。字段校验（必填、端口范围、`auth_type` 取值、`~` 展开）在 `ServerConfig.__post_init__` 完成，见 [`vault.py`](../src/sshm/vault.py)。
 
-### Field Reference
+## Vault 并发
 
-| Field | Required | Description |
-|---|---|---|
-| `name` | yes | Human-readable server label |
-| `host` | yes | Hostname or IP address |
-| `port` | no | SSH port (default: 22) |
-| `user` | yes | Login username |
-| `auth_type` | yes | "key" or "password" |
-| `key_path` | if key | Path to private key file (`~` auto-expanded) |
-| `password` | if password | Server password (plaintext inside encrypted vault) |
-| `group` | no | Logical grouping for display |
-| `notes` | no | Free-text notes |
+多个 `sshm` 实例不能损坏 vault。写操作用 POSIX 建议锁：读用共享锁 `LOCK_SH`、写用独占锁 `LOCK_EX`，写后 `fsync`。实现见 [`vault.py`](../src/sshm/vault.py)。
 
-## Vault Concurrency
+## 会话缓存（Keychain）
 
-Multiple `sshm` instances must not corrupt the vault. Writes use POSIX advisory file locks:
-
-```python
-import fcntl
-
-def _write_locked(path: str, fn):
-    with open(path, "r+b") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        data = f.read()
-        result = fn(data)
-        f.seek(0)
-        f.truncate()
-        f.write(result)
-        f.flush()
-        os.fsync(f.fileno())
-```
-
-Reads use shared locks (`LOCK_SH`); writes use exclusive locks (`LOCK_EX`).
-
-## Session Cache (macOS Keychain)
-
-The derived AES key is cached in the macOS Keychain with a TTL:
+派生的 AES 密钥缓存进 macOS Keychain，带 TTL（固定 3600 秒）：
 
 ```
-First run:       master password -> derive key -> store {key, expires_at} in Keychain
-Subsequent runs: check Keychain -> within TTL? skip prompt. Expired? re-prompt.
-sshm lock:       delete key from Keychain
+首次运行:   主密码 -> 派生密钥 -> 存 {key, expires_at} 进 Keychain
+后续运行:   查 Keychain -> 未过期? 跳过提示. 过期? 重新提示.
+sshm lock:  从 Keychain 删除
 ```
 
-Security note: Keychain items are readable by the user's processes without re-authentication. Any program running as the same user can run `security find-generic-password -a sshm -w` to read the cached AES key. This matches the trust model of SSH agent or GPG agent.
+**安全说明：** Keychain 项可被同用户进程免认证读取——任何以该用户身份运行的程序都能 `security find-generic-password -a sshm -w` 读到缓存的 AES 密钥。这与 SSH agent / GPG agent 的信任模型一致。实现见 [`session.py`](../src/sshm/session.py)。
 
-```python
-import time, json, subprocess
+## TUI 架构
 
-DEFAULT_TTL = 3600
+TUI 基于 [Textual](https://github.com/Textualize/textual)，采用**多 Screen** 模型。`SSHManagerApp` 只做**协调者**——持有状态（vault、密码、servers 列表）并管理 Screen 栈，**自身没有 `BINDINGS`、没有 `compose`、没有状态栏**。所有快捷键绑定在各 Screen 上，每个 Screen 自己 `yield Footer()`——Footer 自动渲染「当前活动 Screen」的绑定，所以底部提示行始终随页面变化、且只有一行（不会重复）。
 
-def store_key(key_hex: str, ttl: int = DEFAULT_TTL) -> None:
-    payload = json.dumps({"key": key_hex, "expires_at": time.time() + ttl})
-    subprocess.run([
-        "security", "add-generic-password",
-        "-a", "sshm", "-s", "sshm-session-key", "-w", "-U",
-    ], input=payload.encode("utf-8"), check=True)
+四个 Screen（[`tui.py`](../src/sshm/tui.py)）：
 
-def load_key() -> str | None:
-    result = subprocess.run([
-        "security", "find-generic-password",
-        "-a", "sshm", "-s", "sshm-session-key", "-w",
-    ], capture_output=True, text=True)
-    if result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout.strip())
-        if data["expires_at"] > time.time():
-            return data["key"]
-    except (json.JSONDecodeError, KeyError):
-        pass
-    clear_key()
-    return None
+- `PasswordScreen` —— 主密码输入 / 重试。
+- `MainScreen` —— 服务器列表 + 搜索（keystone）。
+- `ServerForm` —— 添加 / 编辑服务器。
+- `TransferForm` —— 上传 / 下载路径输入。
 
-def clear_key() -> None:
-    subprocess.run([
-        "security", "delete-generic-password",
-        "-a", "sshm", "-s", "sshm-session-key",
-    ], capture_output=True)
-```
+**关键设计（勿回归）：**
 
-## Data Validation
+- `MainScreen.AUTO_FOCUS = ""`：故意为空，使焦点保持 `None`。这让本屏绑定直接生效，又避免未聚焦的 `DataTable` 用其 `enter→select_cursor` 吞掉回车。不要「改进」成聚焦表格。
+- **退出绑定是 `app.quit` 而非裸 `quit`**：`action_quit` 定义在 App 上，Textual 不会从 Screen 命名空间上溯到 App 找方法，裸 `quit` 在 Screen 上会静默失效。其余主屏动作（`add_server` 等）能工作，是因为每个都在本屏有对应的 `action_*`。
+- **搜索框是过滤的唯一真相源**：`_refresh_table()` 读搜索框当前值；渲染列表镜像到 `_filtered_servers`，`_get_selected_server` 据此映射 `cursor_row`（而非未过滤的 `app.servers`）。搜索框内 **Enter 提交**查询（保留过滤、焦点还给主屏），**Esc** 清空回到全量。
 
-Server config is validated at load and save time via a dataclass:
-
-1. `~` expansion: `key_path: "~/.ssh/id_rsa"` is expanded to an absolute path via `os.path.expanduser()`.
-2. Type coercion: port is validated as integer, `auth_type` checked against allowed values.
-3. `from_dict` copies the input dict to avoid mutating the caller's data.
-
-```python
-import os
-from dataclasses import dataclass
-from typing import Literal, Optional
-
-@dataclass
-class ServerConfig:
-    name: str
-    host: str
-    user: str
-    auth_type: Literal["key", "password"]
-    port: int = 22
-    key_path: Optional[str] = None
-    password: Optional[str] = None
-    group: str = ""
-    notes: str = ""
-
-    def __post_init__(self):
-        errors = []
-        if not self.name or not self.name.strip():
-            errors.append("name is required")
-        if not self.host or not self.host.strip():
-            errors.append("host is required")
-        if not (1 <= self.port <= 65535):
-            errors.append(f"invalid port: {self.port}")
-        if self.auth_type not in ("key", "password"):
-            errors.append(f"invalid auth_type: {self.auth_type}")
-        if self.auth_type == "key" and not self.key_path:
-            errors.append("key_path required for key auth")
-        if self.auth_type == "password" and not self.password:
-            errors.append("password required for password auth")
-        if errors:
-            raise ValueError(f"Server '{self.name}': " + "; ".join(errors))
-
-    @classmethod
-    def from_dict(cls, raw: dict) -> "ServerConfig":
-        d = raw.copy()
-        if d.get("key_path"):
-            d["key_path"] = os.path.expanduser(d["key_path"])
-        return cls(**d)
-```
-
-## Interactive TUI
-
-The TUI is built with [Rich](https://github.com/Textualize/rich) and supports real-time search/filter. Press `/` to search by name or host.
-
-Normal state:
-
-```
-  #  Name       Address           User      Auth    Group
- --- ---------- ----------------- -------- -------- ---------
-  1  prod-web   192.168.1.100     admin     key  production
-  2  prod-db    192.168.1.101     admin     key  production
-  3  staging    10.0.0.50         deploy    pwd  staging
-
-  / search  up/down navigate  Enter connect  e edit  d delete
-  u upload  x download  q quit
-```
-
-Empty state (no servers configured):
-
-```
-  (empty -- use `sshm add` to add your first server)
-
-  a add  q quit
-```
-
-## Edge Cases
-
-### `sshm init` on existing vault
-
-If vault.enc exists, `sshm init` refuses. `sshm init --force` overwrites after a confirmation prompt -- the old password is not required because anyone with filesystem access can delete the vault anyway.
-
-### `sshm edit <server>`
-
-Incremental edit: current values are shown, user presses Enter to keep a field unchanged. Changing `auth_type` from `"key"` to `"password"` prompts for the new required field (`password`), and vice versa.
-
-### `sshm export`
-
-Prints decrypted JSON to stdout. Warning: if terminal output is being logged (by `script(1)`, tmux logging, etc.), plaintext passwords will be written to disk.
-
-### `sshm ls` with no servers
-
-Outputs: `(no servers configured -- use 'sshm add' to add one)`
-
-### `sshm connect` with no servers
-
-Error: "No servers configured. Add one with 'sshm add' first."
-
-## Verification Plan
-
-1. Encryption: vault.enc is not human-readable; wrong master password yields decrypt error.
-2. Connection (key): normal SSH behavior with key-based servers.
-3. Connection (password): pty-based interactive SSH works -- commands, Ctrl+C, terminal resize all pass through correctly.
-4. Connection (wrong password): pty detects re-prompt, raises PermissionError, restores terminal.
-5. Connection (keyboard-interactive server): times out with diagnostic message guiding manual SSH test.
-6. Transfer: upload and download files via SCP, verify content.
-7. Session cache: cached -> no prompt. Expired -> re-prompt. --no-cache works.
-8. Vault concurrency: simultaneous writes from two terminals do not corrupt data.
-9. Validation: malformed input rejected at add/edit time.
-10. Edge cases: sshm init --force confirmation, ~ expansion, empty vault behavior.
-11. Terminal: raw mode restored on Ctrl+C, SIGWINCH forwarded.
+**退出契约**（`cli.run_tui` 按 `app.run()` 返回值分发）：`ServerConfig` → SSH 连接；`("transfer", server, mode, local, remote)` 五元组 → SCP 上传/下载；`None` → 落空。
