@@ -20,7 +20,7 @@
   2  prod-db      192.168.1.101    admin    key   production
   3  staging-app  10.0.0.50        deploy   pwd   staging
 
-  / 搜索 · a 添加 · e 编辑 · d 删除 · Enter 连接 · u 上传 · x 下载 · q 退出 · Esc 取消搜索
+  / 搜索 · a 添加 · e 编辑 · d 删除 · Enter 连接 · u 上传 · x 下载 · o 导出 · i 导入 · q 退出 · Esc 取消搜索
 ```
 
 **搜索：** 按 `/` 聚焦搜索框，按名称或地址实时过滤；**Enter 提交**查询（保留过滤结果、焦点回到列表，可直接对过滤结果操作）；**Esc 取消**（清空、回到全量）。
@@ -100,13 +100,33 @@ sshm download prod-web /var/log/app.log ./app.log
 
 ### `sshm export`
 
-解密并以 JSON 明文打印服务器配置。
+导出全部服务器配置为 JSON（自描述信封）。
 
 ```bash
-sshm export
+sshm export                    # 明文打到 stdout（管道场景）
+sshm export -o backup.json     # 明文写入文件
+sshm export -o backup.json --encrypt   # 用独立密码加密导出文件（备份/迁移更安全）
 ```
 
-**警告：** 若终端输出正被记录（`script(1)`、tmux logging 等），明文密码可能落盘。
+- 不加 `-o` → 输出到 stdout。
+- `--encrypt` → 导出文件用独立密码二次加密（复用 AES-256-GCM）；`--password` 未给则交互提示两次确认。
+- ⚠️ 明文导出含服务器密码：妥善保管导出文件，备份/迁移推荐 `--encrypt`。若 stdout 正被记录（`script(1)`、tmux logging 等），明文密码也可能落盘。
+
+### `sshm import <file>`
+
+从 JSON（`sshm export` 产物）导入服务器，支持三种同名冲突策略。
+
+```bash
+sshm import backup.json                  # 默认 --skip：跳过已存在的同名
+sshm import backup.json --overwrite      # 同名整体覆盖
+sshm import backup.json --rename         # 同名改为 name-2 / name-3 后导入
+sshm import backup.json --dry-run        # 只报告，不写盘
+sshm import - < dump.json                # 从 stdin 导入
+```
+
+- 默认策略 `--skip`；`--overwrite` / `--rename` 三选一互斥。
+- 加密导出文件需提供解密密码：`--password` 或交互提示；密码错误会提示"解密失败，密码错误"。
+- 原子导入：任一条目非法则整体中止、不写半截数据，并报告全部错误。
 
 ## 安装命令
 
