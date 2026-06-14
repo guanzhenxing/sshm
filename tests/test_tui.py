@@ -416,3 +416,21 @@ async def test_search_enter_commits_filter_and_defocuses(app_with_three_servers)
         # 过滤结果仍保留(charlie 可见、alpha 被过滤掉)。
         assert _row_contains(_table(app), "charlie")
         assert not _row_contains(_table(app), "alpha")
+
+
+async def test_quit_key_exits_from_main_screen(app_with_vault):
+    """主列表页按 q 应退出整个 TUI(走 App.action_quit)。
+
+    回归用例:'q → quit' 绑定放在 MainScreen 上时,Textual 只在该 Screen 命名空间里找
+    action_quit,而该方法定义在 App 上、Screen 上没有 → 动作"无目标"、q 失效。
+    其它主屏绑定(a/e/d/u/x…)都各自定义了本屏 action_* 方法,唯独 quit 依赖 App 内置,
+    所以只有它踩这个坑。修正方式:用 'app.quit' 显式指向上 App。
+    """
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert isinstance(app.screen, MainScreen)
+        await pilot.press("q")
+        await pilot.pause()
+        # App.exit() 会把 _exit 置 True —— 按 q 后应已请求退出。
+        assert app._exit

@@ -355,7 +355,9 @@ class MainScreen(Screen):
         Binding("enter", "connect_server", "连接"),
         Binding("u", "upload_file", "上传"),
         Binding("x", "download_file", "下载"),
-        Binding("q", "quit", "退出"),
+        # action_quit 定义在 App 上、Screen 上没有,Textual 不会自动上溯命名空间查找,
+        # 故必须用 'app.quit' 显式指向上 App,否则 q "无目标" 不退出。
+        Binding("q", "app.quit", "退出"),
         Binding("escape", "unfocus_search", "取消搜索"),
     ]
 
