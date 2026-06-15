@@ -1,6 +1,7 @@
 """交互式 TUI — 基于 Textual。"""
 
 import os
+from collections.abc import Callable
 from typing import ClassVar
 
 from cryptography.exceptions import InvalidTag
@@ -561,6 +562,70 @@ class ImportForm(Screen):
             app.close_form()
 
 
+# ── 确认对话框 ──────────────────────────────────────────
+
+class ConfirmScreen(Screen):
+    """确认对话框——消息 + 确认/取消按钮，dismiss 前回调。"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmScreen {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    ConfirmScreen Vertical {
+        width: 50;
+        height: auto;
+        padding: 1 4;
+        border: thick $warning;
+    }
+    ConfirmScreen Label {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    ConfirmScreen Horizontal {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+        align: center middle;
+    }
+    ConfirmScreen Button {
+        margin: 0 2;
+    }
+    """
+
+    def __init__(self, message: str, on_result: Callable[[bool], None]):
+        super().__init__()
+        self.message = message
+        self.on_result = on_result
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical():
+            yield Label(self.message, id="confirm-message")
+            with Horizontal():
+                yield Button("确认", variant="error", id="btn-confirm")
+                yield Button("取消", variant="default", id="btn-cancel")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-confirm":
+            self.on_result(True)
+            self.dismiss()
+        elif event.button.id == "btn-cancel":
+            self.on_result(False)
+            self.dismiss()
+
+    def action_cancel(self) -> None:
+        self.on_result(False)
+        self.dismiss()
+
+
 # ── 主列表页 ─────────────────────────────────────────────
 
 class MainScreen(Screen):
@@ -747,12 +812,18 @@ class MainScreen(Screen):
             return
         app = self.app
         assert isinstance(app, SSHManagerApp)
-        try:
-            app.vault.remove_server(server.name, app.password)
-            app.servers = app.vault.list_servers(app.password)
-            self._refresh_table()
-        except Exception as e:
-            self.app.exit(message=f"Delete failed: {e}")
+
+        def do_delete(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            try:
+                app.vault.remove_server(server.name, app.password)
+                app.servers = app.vault.list_servers(app.password)
+                self._refresh_table()
+            except Exception as e:
+                self.app.exit(message=f"Delete failed: {e}")
+
+        app.push_screen(ConfirmScreen(f"确定删除「{server.name}」？", on_result=do_delete))
 
     def action_upload_file(self) -> None:
         app = self.app

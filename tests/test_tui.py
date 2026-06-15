@@ -200,7 +200,7 @@ async def test_add_server_creates_row(app_with_vault):
 # ── 4. 删除服务器 ────────────────────────────────────────
 
 async def test_delete_server_removes_row(app_with_vault):
-    """选中第一行后按 d → 该服务器从表格消失,并显示空占位行。
+    """选中第一行后按 d → 弹出确认对话框 → 点确认 → 该服务器从表格消失。
 
     注意:表格清空后会显示占位行,所以不能简单断言 row_count--。
     这里既断言"alpha 不再可见",也断言"空占位行已渲染"——
@@ -211,13 +211,38 @@ async def test_delete_server_removes_row(app_with_vault):
         await _authenticate(pilot)
         assert _row_contains(_table(app), "alpha")
 
-        # 认证后默认无焦点、cursor_row=0(即选中 alpha);直接按 d 触发应用级绑定。
         await pilot.press("d")
+        await pilot.pause()
+        # 确认对话框已弹出
+        from sshm.tui import ConfirmScreen
+        assert isinstance(app.screen, ConfirmScreen)
+        # 点"确认"按钮执行删除
+        await pilot.click("#btn-confirm")
         await pilot.pause()
 
         assert not _row_contains(_table(app), "alpha")
         # 正向断言:删除唯一服务器后,表格应渲染空占位行。
         assert _row_contains(_table(app), "(empty")
+
+
+async def test_delete_cancel_keeps_server(app_with_vault):
+    """按 d → 弹出确认对话框 → 点取消 → 服务器仍存在。"""
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert _row_contains(_table(app), "alpha")
+
+        await pilot.press("d")
+        await pilot.pause()
+        from sshm.tui import ConfirmScreen
+        assert isinstance(app.screen, ConfirmScreen)
+        # 点"取消"按钮，不删除
+        await pilot.click("#btn-cancel")
+        await pilot.pause()
+
+        # 回到主屏，alpha 仍在
+        assert isinstance(app.screen, MainScreen)
+        assert _row_contains(_table(app), "alpha")
 
 
 # ── 5. 连接(Enter)退出 ───────────────────────────────────
