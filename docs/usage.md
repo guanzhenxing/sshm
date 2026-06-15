@@ -12,13 +12,14 @@
 
 ## 交互式 TUI（`sshm`，无参数）
 
-启动交互模式。输入主密码（或从 Keychain 缓存读取）后，进入可搜索的服务器列表：
+启动交互模式。输入主密码（或从 Keychain 缓存读取）后，进入按分组组织的服务器列表：
 
 ```
-  #  Name         Address          User     Auth  Group
-  1  prod-web     192.168.1.100    admin    key   production
-  2  prod-db      192.168.1.101    admin    key   production
-  3  staging-app  10.0.0.50        deploy   pwd   staging
+  ── production (2) ──
+  1  prod-web     192.168.1.100    admin    key   (备注)
+  2  prod-db      192.168.1.101    admin    key
+  ── staging (1) ──
+  3  staging-app  10.0.0.50        deploy   pwd
 
   / 搜索 · a 添加 · e 编辑 · d 删除 · Enter 连接 · u 上传 · x 下载 · o 导出 · i 导入 · q 退出 · Esc 取消搜索
 ```
@@ -130,7 +131,7 @@ sshm import - < dump.json                # 从 stdin 导入
 
 ## 安装命令
 
-推荐用 pyproject 声明的 console script（`pip install -e .` 后直接 `sshm`），或运行 `./install.sh` 安装 wrapper 到 `/usr/local/bin`。详见 [README 快速开始](../README.md#快速开始)。`sshm` 等效于 `python -m sshm`。
+推荐用 pyproject 声明的 console script（`pip install -e ".[dev]"` 后直接 `sshm`），或运行 `./install.sh` 安装独立二进制到 `~/.local/bin`。详见 [README 快速开始](../README.md#快速开始)。`sshm` 等效于 `python -m sshm`。
 
 ## 示例
 

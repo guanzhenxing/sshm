@@ -102,17 +102,21 @@ sshm lock:  从 Keychain 删除
 
 TUI 基于 [Textual](https://github.com/Textualize/textual)，采用**多 Screen** 模型。`SSHManagerApp` 只做**协调者**——持有状态（vault、密码、servers 列表）并管理 Screen 栈，**自身没有 `BINDINGS`、没有 `compose`、没有状态栏**。所有快捷键绑定在各 Screen 上，每个 Screen 自己 `yield Footer()`——Footer 自动渲染「当前活动 Screen」的绑定，所以底部提示行始终随页面变化、且只有一行（不会重复）。
 
-四个 Screen（[`tui.py`](../src/sshm/tui.py)）：
+六个 Screen（[`tui.py`](../src/sshm/tui.py)）：
 
 - `PasswordScreen` —— 主密码输入 / 重试。
 - `MainScreen` —— 服务器列表 + 搜索（keystone）。
 - `ServerForm` —— 添加 / 编辑服务器。
 - `TransferForm` —— 上传 / 下载路径输入。
+- `ExportForm` —— 服务器列表导出（明文 / 加密）。
+- `ImportForm` —— 服务器列表导入（跳过 / 覆盖 / 重命名）。
 
 **关键设计（勿回归）：**
 
 - `MainScreen.AUTO_FOCUS = ""`：故意为空，使焦点保持 `None`。这让本屏绑定直接生效，又避免未聚焦的 `DataTable` 用其 `enter→select_cursor` 吞掉回车。不要「改进」成聚焦表格。
+- **DataTable `can_focus = False`**：点击行只移动光标、不抢焦点，Footer 始终显示主屏绑定，"连接"提示不消失。
 - **退出绑定是 `app.quit` 而非裸 `quit`**：`action_quit` 定义在 App 上，Textual 不会从 Screen 命名空间上溯到 App 找方法，裸 `quit` 在 Screen 上会静默失效。其余主屏动作（`add_server` 等）能工作，是因为每个都在本屏有对应的 `action_*`。
-- **搜索框是过滤的唯一真相源**：`_refresh_table()` 读搜索框当前值；渲染列表镜像到 `_filtered_servers`，`_get_selected_server` 据此映射 `cursor_row`（而非未过滤的 `app.servers`）。搜索框内 **Enter 提交**查询（保留过滤、焦点还给主屏），**Esc** 清空回到全量。
+- **搜索框是过滤的唯一真相源**：`_refresh_table()` 读搜索框当前值；渲染列表（按 group 分组、组内按 name 排序）镜像到 `_rows`（`list[ServerConfig | None]`，`None` = 分组标题行），`_get_selected_server` 据此映射 `cursor_row`（而非未过滤的 `app.servers`）。搜索框内 **Enter 提交**查询（保留过滤、焦点还给主屏），**Esc** 清空回到全量。
+- **方向键导航跳过标题行**：`action_cursor_up`/`action_cursor_down` 自动跳过 `_rows` 中的 `None`（分组标题），光标始终停在可操作的数据行上。
 
 **退出契约**（`cli.run_tui` 按 `app.run()` 返回值分发）：`ServerConfig` → SSH 连接；`("transfer", server, mode, local, remote)` 五元组 → SCP 上传/下载；`None` → 落空。
