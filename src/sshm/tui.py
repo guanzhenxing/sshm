@@ -718,15 +718,20 @@ class MainScreen(Screen):
             self._rows = []
             return
 
-        # 按 group 分组、组内按 name 排序
+        # 按 group 分组、保持 vault 原始顺序（与 CLI 编号一致）
         groups: dict[str, list[ServerConfig]] = {}
         for s in filtered:
             g = s.group.strip() if s.group else ""
             groups.setdefault(g, []).append(s)
-        # 组名排序:空组(未分组)排在最后
-        group_names = sorted(g for g in groups if g)
+        # 组名按首次出现顺序排列，空组(未分组)排在最后
+        seen: list[str] = []
+        for s in filtered:
+            g = s.group.strip() if s.group else ""
+            if g not in seen:
+                seen.append(g)
+        group_names = [g for g in seen if g]  # 非空组按首次出现顺序
         if "" in groups:
-            group_names.append("")
+            group_names.append("")  # 空组排最后
 
         # 始终显示分组头行(None),单分组也不例外——用户需要看到分组名
         self._rows = []
@@ -735,7 +740,7 @@ class MainScreen(Screen):
             header = f"── {g or '未分组'} ({len(groups[g])}) ──"
             table.add_row(header, "", "", "", "", "")
             self._rows.append(None)  # 分组头,不可选中
-            for s in sorted(groups[g], key=lambda s: s.name.lower()):
+            for s in groups[g]:  # vault 原始顺序，与 CLI 编号一致
                 idx += 1
                 auth_label = "key" if s.auth_type == "key" else "pwd"
                 notes = s.notes if s.notes else ""

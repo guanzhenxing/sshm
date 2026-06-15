@@ -902,9 +902,9 @@ async def test_notes_column_shows_remarks(app_with_grouped_servers):
 async def test_cursor_skips_group_header_rows(app_with_grouped_servers):
     """方向键自动跳过标题行，光标始终停在数据行上。
 
-    行结构：row0=dev头, row1=bravo, row2=prod头, row3=alpha, row4=charlie,
-            row5=未分组头, row6=delta。
-    光标默认从第一个数据行(row1=bravo)开始，向任意方向移动都跳过标题行。
+    行结构（vault 原始顺序、分组）：row0=prod头, row1=alpha, row2=charlie,
+    row3=dev头, row4=bravo, row5=未分组头, row6=delta。
+    光标默认从第一个数据行(row1=alpha)开始。
     """
     app = app_with_grouped_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
@@ -912,35 +912,35 @@ async def test_cursor_skips_group_header_rows(app_with_grouped_servers):
         table = _table(app)
 
         main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
-        # 光标从第一个数据行 bravo(row1)开始(非标题行 row0)
+        # 光标从第一个数据行 alpha(row1)开始
         assert table.cursor_row == 1
-        assert main._get_selected_server().name == "bravo"
+        assert main._get_selected_server().name == "alpha"
 
-        # 上移 → row0 是标题(None),跳过,留在 row1(bravo)
+        # 上移 → row0 是标题(None),跳过,留在 row1(alpha)
         await pilot.press("up")
         await pilot.pause()
         assert table.cursor_row == 1
-        assert main._get_selected_server().name == "bravo"
-
-        # 下移 bravo → 跳过 prod 标题(row2) → alpha(row3)
-        await pilot.press("down")
-        assert table.cursor_row == 3
         assert main._get_selected_server().name == "alpha"
 
-        # alpha → charlie(row4)
+        # 下移 alpha → charlie(row2)
         await pilot.press("down")
-        assert table.cursor_row == 4
+        assert table.cursor_row == 2
         assert main._get_selected_server().name == "charlie"
 
-        # charlie → 跳过未分组标题(row5) → delta(row6)
+        # charlie → 跳过 dev 标题(row3) → bravo(row4)
+        await pilot.press("down")
+        assert table.cursor_row == 4
+        assert main._get_selected_server().name == "bravo"
+
+        # bravo → 跳过未分组标题(row5) → delta(row6)
         await pilot.press("down")
         assert table.cursor_row == 6
         assert main._get_selected_server().name == "delta"
 
-        # 上移:delta → 跳过未分组标题(row5) → charlie(row4)
+        # 上移:delta → 跳过未分组标题 → bravo(row4)
         await pilot.press("up")
         assert table.cursor_row == 4
-        assert main._get_selected_server().name == "charlie"
+        assert main._get_selected_server().name == "bravo"
 
 
 async def test_connect_on_first_data_row_works(app_with_grouped_servers):
@@ -948,11 +948,11 @@ async def test_connect_on_first_data_row_works(app_with_grouped_servers):
     app = app_with_grouped_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
-        # 光标默认在第一个数据行 bravo(row1),不是标题行(row0)
+        # 光标默认在第一个数据行 alpha(row1),不是标题行(row0)
         main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
-        assert main._get_selected_server().name == "bravo"
+        assert main._get_selected_server().name == "alpha"
         await pilot.press("enter")
         await pilot.pause()
-    # 回车连接了 bravo（而非因标题行被吞掉）
+    # 回车连接了 alpha（而非因标题行被吞掉）
     assert isinstance(app.return_value, ServerConfig)
-    assert app.return_value.name == "bravo"
+    assert app.return_value.name == "alpha"
