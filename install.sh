@@ -105,6 +105,24 @@ uninstall() {
     fi
 }
 
+# ── PATH 检测 ──────────────────────────────────────
+
+check_path() {
+    if [ "$BIN_DIR" = "/usr/local/bin" ]; then
+        return  # 系统目录默认在 PATH 中
+    fi
+    if echo "$PATH" | tr ':' '\n' | grep -qxF "$BIN_DIR"; then
+        return  # 已在 PATH 中
+    fi
+    echo ""
+    echo "⚠️  $BIN_DIR 不在 PATH 中，终端可能找不到 sshm。"
+    echo "   请将以下行添加到 ~/.zshrc（或 ~/.bash_profile）："
+    echo ""
+    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo ""
+    echo "   然后执行: source ~/.zshrc"
+}
+
 # ── 主逻辑 ────────────────────────────────────────
 
 case "${1:-}" in
@@ -113,9 +131,11 @@ case "${1:-}" in
         ;;
     pyinstaller|binary)
         install_pyinstaller
+        check_path
         ;;
     wrapper|"")
         install_wrapper
+        check_path
         ;;
     *)
         echo "用法: $0 [wrapper|pyinstaller|uninstall]"
