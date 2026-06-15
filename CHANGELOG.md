@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.5] - 2026-06-15
+
+### 新增
+
+- **主屏列表按分组显示 + 备注列**：服务器列表按 `group` 字段分组（多分组时显示 `── 组名 (N) ──` 标题行，空组标"未分组"；单分组保持扁平）；方向键导航自动跳过分组标题行。列表新增 `Notes`（备注）列，原 `Group` 列由分组标题替代不再重复显示。
+
 ## [0.1.4] - 2026-06-15
 
 ### 修复
@@ -53,6 +59,7 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
+[0.1.5]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.5
 [0.1.4]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.3
 [0.1.2]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.2
