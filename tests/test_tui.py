@@ -256,21 +256,30 @@ def app_with_servers(monkeypatch):
 
 
 async def test_arrow_keys_navigate_cursor(app_with_servers):
-    """方向键在主屏移动表格光标(focus=None 也能导航,不再被"无焦点"卡住)。"""
+    """方向键在主屏移动表格光标(focus=None 也能导航,不再被"无焦点"卡住)。
+
+    现在分组头始终显示 → row0=未分组头, row1=alpha, row2=beta, row3=gamma。
+    光标默认从第一个数据行(row1)开始,方向键可导航并跳过标题行。
+    """
     app = app_with_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
         table = _table(app)
-        assert table.cursor_row == 0
-        await pilot.press("down")
-        await pilot.pause()
+        # 光标从第一个数据行 alpha(row1)开始(非标题行 row0)
         assert table.cursor_row == 1
         await pilot.press("down")
         await pilot.pause()
-        assert table.cursor_row == 2
+        assert table.cursor_row == 2  # beta
+        await pilot.press("down")
+        await pilot.pause()
+        assert table.cursor_row == 3  # gamma
         await pilot.press("up")
         await pilot.pause()
-        assert table.cursor_row == 1
+        assert table.cursor_row == 2  # beta
+        # 继续上移到 alpha,跳过标题行
+        await pilot.press("up")
+        await pilot.pause()
+        assert table.cursor_row == 1  # alpha(不会卡在 row0 标题)
 
 
 async def test_click_table_does_not_steal_focus(app_with_servers):
@@ -311,15 +320,17 @@ async def test_click_selects_row_and_enter_connects(app_with_servers):
     回归:用户报告"点击页面后能选服务器,但底部 enter 提示消失、回车没效果"——
     根因是点击让 DataTable 获得焦点,Footer 改显表格绑定且吞掉回车。
     修复(DataTable can_focus=False)后点击只移动光标、焦点保持 None。
+
+    现在分组头始终显示 → 列头 y=0, 未分组头 y=1, alpha=2, beta=3, gamma=4。
     """
     app = app_with_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
-        # 点击 gamma 行(表头占 y=0,alpha/beta/gamma 依次 y=1/2/3)
-        await pilot.click("#main-table", offset=(10, 3))
+        # 点击 gamma 行(列头+分组头+alpha+beta+gamma = y=4)
+        await pilot.click("#main-table", offset=(10, 4))
         await pilot.pause()
         table = _table(app)
-        assert table.cursor_row == 2          # 选中 gamma
+        assert table.cursor_row == 3          # 选中 gamma(行下标)
         assert app.focused is None            # 点击没抢焦点
         await pilot.press("enter")
         await pilot.pause()
@@ -841,15 +852,17 @@ async def test_group_headers_for_multiple_groups(app_with_grouped_servers):
             assert _row_contains(table, name)
 
 
-async def test_single_group_no_header(app_with_servers):
-    """只有一种分组(空组)时不出现分组头行，保持扁平列表(回归保护)。"""
+async def test_single_group_header_shows(app_with_servers):
+    """单分组也显示标题行，用户随时看到分组名。"""
     app = app_with_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
         table = _table(app)
-        # 无分组头:alpha + beta + gamma = 3 rows
-        assert table.row_count == 3
-        assert not _row_contains(table, "──")
+        # 标题行 + 3 台服务器 = 4 rows
+        assert table.row_count == 4
+        # 标题行显示"未分组"（因服务器 group 均为空）
+        assert _row_contains(table, "──")
+        assert _row_contains(table, "未分组")
 
 
 async def test_notes_column_shows_remarks(app_with_grouped_servers):
@@ -862,26 +875,29 @@ async def test_notes_column_shows_remarks(app_with_grouped_servers):
 
 
 async def test_cursor_skips_group_header_rows(app_with_grouped_servers):
-    """多分组时光标跳过标题行（不卡住、不选中 None）。"""
+    """方向键自动跳过标题行，光标始终停在数据行上。
+
+    行结构：row0=dev头, row1=bravo, row2=prod头, row3=alpha, row4=charlie,
+            row5=未分组头, row6=delta。
+    光标默认从第一个数据行(row1=bravo)开始，向任意方向移动都跳过标题行。
+    """
     app = app_with_grouped_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
         table = _table(app)
 
-        # 行结构：row0=dev 头, row1=bravo, row2=prod 头, row3=alpha, row4=charlie,
-        #         row5=未分组头, row6=delta
         main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
-        # 行 0 是标题（None），_get_selected_server 返回 None
-        assert main._get_selected_server() is None
-
-        # 按下 → 跳过标题到 bravo(第一个数据行,索引 1)
-        await pilot.press("down")
-        await pilot.pause()
+        # 光标从第一个数据行 bravo(row1)开始(非标题行 row0)
         assert table.cursor_row == 1
-        assert main._get_selected_server() is not None
         assert main._get_selected_server().name == "bravo"
 
-        # bravo → 跳过 prod 标题(row2) → alpha(row3)
+        # 上移 → row0 是标题(None),跳过,留在 row1(bravo)
+        await pilot.press("up")
+        await pilot.pause()
+        assert table.cursor_row == 1
+        assert main._get_selected_server().name == "bravo"
+
+        # 下移 bravo → 跳过 prod 标题(row2) → alpha(row3)
         await pilot.press("down")
         assert table.cursor_row == 3
         assert main._get_selected_server().name == "alpha"
@@ -896,19 +912,22 @@ async def test_cursor_skips_group_header_rows(app_with_grouped_servers):
         assert table.cursor_row == 6
         assert main._get_selected_server().name == "delta"
 
-        # 上移:delta → 跳过未分组标题 → charlie(row4)
+        # 上移:delta → 跳过未分组标题(row5) → charlie(row4)
         await pilot.press("up")
         assert table.cursor_row == 4
         assert main._get_selected_server().name == "charlie"
 
 
-async def test_connect_skips_header_rows(app_with_grouped_servers):
-    """光标在分组标题行上按回车不连接（_get_selected_server→None,action 跳过）。"""
+async def test_connect_on_first_data_row_works(app_with_grouped_servers):
+    """光标从第一个数据行开始，回车直接连接（不会被标题行卡住）。"""
     app = app_with_grouped_servers
     async with app.run_test(size=TEST_SIZE) as pilot:
         await _authenticate(pilot)
-        # 默认 cursor_row=0 即标题行，回车无效
+        # 光标默认在第一个数据行 bravo(row1),不是标题行(row0)
+        main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
+        assert main._get_selected_server().name == "bravo"
         await pilot.press("enter")
         await pilot.pause()
-    # 标题行不连接:return_value 仍为 None（未退出）
-    assert app.return_value is None
+    # 回车连接了 bravo（而非因标题行被吞掉）
+    assert isinstance(app.return_value, ServerConfig)
+    assert app.return_value.name == "bravo"

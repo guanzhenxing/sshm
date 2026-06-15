@@ -663,21 +663,22 @@ class MainScreen(Screen):
         if "" in groups:
             group_names.append("")
 
-        # 多个分组时插入分组头行(None);单分组则无头行(保持扁平)
+        # 始终显示分组头行(None),单分组也不例外——用户需要看到分组名
         self._rows = []
         idx = 0
-        multi_group = len(group_names) > 1
         for g in group_names:
-            if multi_group:
-                header = f"── {g or '未分组'} ({len(groups[g])}) ──"
-                table.add_row(header, "", "", "", "", "")
-                self._rows.append(None)  # 分组头,不可选中
+            header = f"── {g or '未分组'} ({len(groups[g])}) ──"
+            table.add_row(header, "", "", "", "", "")
+            self._rows.append(None)  # 分组头,不可选中
             for s in sorted(groups[g], key=lambda s: s.name.lower()):
                 idx += 1
                 auth_label = "key" if s.auth_type == "key" else "pwd"
                 notes = s.notes if s.notes else ""
                 table.add_row(str(idx), s.name, s.host, s.user, auth_label, notes)
                 self._rows.append(s)
+        # 光标默认跳到第一个数据行（跳过标题行），避免 enter/d 等默认无响应
+        first_data = next((i for i, r in enumerate(self._rows) if r is not None), 0)
+        table.move_cursor(row=first_data)
 
     def _get_selected_server(self) -> ServerConfig | None:
         table = self.query_one("#main-table", DataTable)
