@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.3] - 2026-06-15
+
+### 修复
+
+- **导入表单「取消」按钮被裁**：ImportForm 的 4 个按钮（跳过/覆盖/重命名/取消）在 `width:70` 容器里总宽超出按钮行，"取消"被挤过右边框、终端稍窄即显示不全。根因是 Textual Button 默认 `min-width:16`；给按钮设 `width:13` + `min-width:0` 收窄，4 个均落在行内。
+
 ## [0.1.2] - 2026-06-14
 
 ### 新增
@@ -41,6 +47,7 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
+[0.1.3]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.3
 [0.1.2]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.1
 [0.1.0]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.0
