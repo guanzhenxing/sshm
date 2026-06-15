@@ -583,6 +583,10 @@ class MainScreen(Screen):
 
     BINDINGS = [
         Binding("slash", "focus_search", "搜索", key_display="/"),
+        # 方向键导航：focus=None 时主屏绑定直接生效，移动表格光标。
+        # show=False：方向键足够直觉，避免挤爆 Footer（仍可按键使用）。
+        Binding("up", "cursor_up", "上移", show=False),
+        Binding("down", "cursor_down", "下移", show=False),
         Binding("a", "add_server", "添加"),
         Binding("e", "edit_server", "编辑"),
         Binding("d", "delete_server", "删除"),
@@ -620,6 +624,9 @@ class MainScreen(Screen):
     def _setup_table(self) -> None:
         table = self.query_one("#main-table", DataTable)
         table.cursor_type = "row"
+        # 不可聚焦：点击某行只移动光标、不抢焦点。这样 Footer 始终显示主屏绑定
+        # （"连接"提示不消失），且回车不会被 DataTable 的 enter→select_cursor 吞掉。
+        table.can_focus = False
         table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
 
     def _refresh_table(self) -> None:
@@ -673,6 +680,16 @@ class MainScreen(Screen):
         self.query_one("#search-input", Input).value = ""
         self._refresh_table()
         self.set_focus(None)  # 回到焦点-None 基线,a/d/enter/u 仍可用
+
+    def action_cursor_up(self) -> None:
+        table = self.query_one("#main-table", DataTable)
+        if table.cursor_row > 0:
+            table.move_cursor(row=table.cursor_row - 1)
+
+    def action_cursor_down(self) -> None:
+        table = self.query_one("#main-table", DataTable)
+        if table.cursor_row < len(self._filtered_servers) - 1:
+            table.move_cursor(row=table.cursor_row + 1)
 
     def action_connect_server(self) -> None:
         server = self._get_selected_server()

@@ -235,6 +235,98 @@ async def test_connect_exits_with_server_config(app_with_vault):
     assert app.return_value.name == "alpha"
 
 
+@pytest.fixture
+def app_with_servers(monkeypatch):
+    """临时 vault 含 3 台服务器(alpha/beta/gamma),用于光标导航测试。"""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "vault.enc")
+        vault = Vault(path)
+        vault.init(TEST_PASSWORD)
+        for n in ("alpha", "beta", "gamma"):
+            vault.add_server(
+                ServerConfig(
+                    name=n, host="1.2.3.4", port=22, user="root",
+                    auth_type="password", password="x",
+                ),
+                TEST_PASSWORD,
+            )
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        yield SSHManagerApp(vault_path=path)
+
+
+async def test_arrow_keys_navigate_cursor(app_with_servers):
+    """方向键在主屏移动表格光标(focus=None 也能导航,不再被"无焦点"卡住)。"""
+    app = app_with_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        table = _table(app)
+        assert table.cursor_row == 0
+        await pilot.press("down")
+        await pilot.pause()
+        assert table.cursor_row == 1
+        await pilot.press("down")
+        await pilot.pause()
+        assert table.cursor_row == 2
+        await pilot.press("up")
+        await pilot.pause()
+        assert table.cursor_row == 1
+
+
+async def test_click_table_does_not_steal_focus(app_with_servers):
+    """点击表格不抢焦点 → Footer 始终显示主屏绑定、回车不被 DataTable 吞。
+
+    回归:此前点击让 DataTable 获得焦点,Footer 的"连接"提示消失、回车无效。
+    修复:DataTable 设 can_focus=False。
+    """
+    app = app_with_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert app.focused is None
+        await pilot.click("#main-table")
+        await pilot.pause()
+        assert app.focused is None
+
+
+async def test_enter_connects_navigated_server(app_with_servers):
+    """方向键选到 beta 后回车 → 返回 beta(而非默认 alpha)。
+
+    回归:此前 focus=None 时方向键不动光标,用户只能鼠标点选;而点击又抢焦点、
+    吞掉回车 → "选了别的服务器、回车无反应"。现在方向键可导航 + 回车连选中项。
+    """
+    app = app_with_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("down")  # alpha → beta
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert isinstance(app.return_value, ServerConfig)
+    assert app.return_value.name == "beta"
+
+
+async def test_click_selects_row_and_enter_connects(app_with_servers):
+    """鼠标点击选中某行 → 回车连接该服务器(点击不抢焦点、不吞回车)。
+
+    回归:用户报告"点击页面后能选服务器,但底部 enter 提示消失、回车没效果"——
+    根因是点击让 DataTable 获得焦点,Footer 改显表格绑定且吞掉回车。
+    修复(DataTable can_focus=False)后点击只移动光标、焦点保持 None。
+    """
+    app = app_with_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        # 点击 gamma 行(表头占 y=0,alpha/beta/gamma 依次 y=1/2/3)
+        await pilot.click("#main-table", offset=(10, 3))
+        await pilot.pause()
+        table = _table(app)
+        assert table.cursor_row == 2          # 选中 gamma
+        assert app.focused is None            # 点击没抢焦点
+        await pilot.press("enter")
+        await pilot.pause()
+    assert isinstance(app.return_value, ServerConfig)
+    assert app.return_value.name == "gamma"
+
+
 # ── 6. 传输(上传)退出 ────────────────────────────────────
 
 async def test_upload_exits_with_transfer_tuple(app_with_vault):
