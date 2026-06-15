@@ -498,6 +498,8 @@ class ImportForm(Screen):
         margin-top: 1;
     }
     ImportForm Button {
+        width: 13;
+        min-width: 0;
         margin: 0 1;
     }
     """

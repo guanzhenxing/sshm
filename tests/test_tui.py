@@ -619,6 +619,28 @@ async def test_import_form_footer_shows_cancel(app_with_vault):
         assert "添加" not in descs
 
 
+async def test_import_form_buttons_fit_in_row(app_with_vault):
+    """4 个按钮（跳过/覆盖/重命名/取消）必须全部落在按钮行内、不被裁掉。
+
+    回归：Textual Button 默认 min-width:16，4 个按钮总宽超出 ImportForm 按钮
+    行（width:70），"取消"被挤过右边框、终端稍窄即显示不全。修复后每个按钮
+    收窄到 13、解除 min-width，4 个均落在行内。
+    """
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("i")
+        await pilot.pause()
+        from sshm.tui import ImportForm
+        assert isinstance(app.screen, ImportForm)
+        row = app.screen.query_one("Horizontal")
+        row_right = row.region.x + row.region.width
+        for bid in ("btn-skip", "btn-overwrite", "btn-rename", "btn-cancel"):
+            btn = app.screen.query_one(f"#{bid}")
+            right = btn.region.x + btn.region.width
+            assert right <= row_right, f"{bid} 右边界 {right} 超出按钮行 {row_right}"
+
+
 async def test_import_invalid_file_shows_error(monkeypatch):
     """导入不存在的文件 → ImportForm 仍在前台、#error-label 回显错误。"""
     with tempfile.TemporaryDirectory() as d:
