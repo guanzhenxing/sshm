@@ -2,6 +2,23 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-06-15
+
+### 新增
+
+- **主屏列表按分组显示 + 备注列**：服务器列表按 `group` 字段分组，始终显示分组标题行（`── 组名 (N) ──`，空组标"未分组"）；方向键自动跳过分组标题行。列新增 `Notes`（备注）。
+- **删除确认对话框**：TUI 按 `d` 弹出 `ConfirmScreen`（"确定删除「xxx」？" → 确认/取消），防止误操作。
+- **install.sh PATH 检测**：安装后检测 `~/.local/bin` 是否在 PATH，不在则打印配置指引。
+
+### 修复
+
+- **TUI 列表编号与 CLI 一致**：列表保持 vault 原始顺序（不再按字母重排），`#1` `#2` 与 `sshm connect 3` 一致。
+- **install.sh 安装路径**：默认安装到 `~/.local/bin`（无需 sudo）；sudo 运行时安装到 `/usr/local`。
+
+### 文档
+
+- README / usage.md / architecture.md 同步到当前架构（Screen 列表、列头、分组、安装路径）。
+
 ## [0.1.5] - 2026-06-15
 
 ### 新增
@@ -59,6 +76,7 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
+[0.2.0]: https://github.com/guanzhenxing/sshm/releases/tag/v0.2.0
 [0.1.5]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.5
 [0.1.4]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.3
