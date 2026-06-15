@@ -568,10 +568,12 @@ class MainScreen(Screen):
 
     def __init__(self) -> None:
         super().__init__()
-        # 表格当前渲染的(可能已过滤)服务器列表,与可见行一一对应。
+        # 表格当前渲染的可见行(含分组头),与 DataTable 行一一对应。
+        # - None → 分组头行(不可选中,光标跳过)
+        # - ServerConfig → 数据行
         # _get_selected_server 据此把 cursor_row 映射回正确的服务器,而不再去索引
         # 未过滤的 app.servers —— 后者在搜索时会让"选中/连接/删除的不是看到的那台"。
-        self._filtered_servers: list[ServerConfig] = []
+        self._rows: list[ServerConfig | None] = []
 
     # 禁用本屏自动聚焦 → 焦点保持为 None:
     #  (1) Screen._update_auto_focus 因 auto_focus 为空而跳过,pop_screen 回到本屏时
@@ -627,7 +629,7 @@ class MainScreen(Screen):
         # 不可聚焦：点击某行只移动光标、不抢焦点。这样 Footer 始终显示主屏绑定
         # （"连接"提示不消失），且回车不会被 DataTable 的 enter→select_cursor 吞掉。
         table.can_focus = False
-        table.add_columns("#", "Name", "Address", "User", "Auth", "Group")
+        table.add_columns("#", "Name", "Address", "User", "Auth", "Notes")
 
     def _refresh_table(self) -> None:
         app = self.app
@@ -637,29 +639,53 @@ class MainScreen(Screen):
         # 搜索框文本永远一致 —— 添加/编辑/删除后重新刷新也遵循同一过滤,不会出现
         # "框里有查询、表格却显示全量"的脱节。
         filter_text = self.query_one("#search-input", Input).value.strip().lower()
-        self._filtered_servers = (
+        filtered = (
             app.servers if not filter_text
             else [s for s in app.servers
                   if filter_text in s.name.lower() or filter_text in s.host.lower()]
         )
         table.clear()
-        if not self._filtered_servers:
+        if not filtered:
             if not app.servers:
                 table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
             else:
                 table.add_row("", "(no match)", "", "", "", "")
+            self._rows = []
             return
-        for i, s in enumerate(self._filtered_servers, 1):
-            auth_label = "key" if s.auth_type == "key" else "pwd"
-            table.add_row(str(i), s.name, s.host, s.user, auth_label, s.group)
+
+        # 按 group 分组、组内按 name 排序
+        groups: dict[str, list[ServerConfig]] = {}
+        for s in filtered:
+            g = s.group.strip() if s.group else ""
+            groups.setdefault(g, []).append(s)
+        # 组名排序:空组(未分组)排在最后
+        group_names = sorted(g for g in groups if g)
+        if "" in groups:
+            group_names.append("")
+
+        # 多个分组时插入分组头行(None);单分组则无头行(保持扁平)
+        self._rows = []
+        idx = 0
+        multi_group = len(group_names) > 1
+        for g in group_names:
+            if multi_group:
+                header = f"── {g or '未分组'} ({len(groups[g])}) ──"
+                table.add_row(header, "", "", "", "", "")
+                self._rows.append(None)  # 分组头,不可选中
+            for s in sorted(groups[g], key=lambda s: s.name.lower()):
+                idx += 1
+                auth_label = "key" if s.auth_type == "key" else "pwd"
+                notes = s.notes if s.notes else ""
+                table.add_row(str(idx), s.name, s.host, s.user, auth_label, notes)
+                self._rows.append(s)
 
     def _get_selected_server(self) -> ServerConfig | None:
         table = self.query_one("#main-table", DataTable)
         row = table.cursor_row
-        # cursor_row 是"可见行"的下标,而可见行 == _filtered_servers,二者同源。
-        if row is None or row < 0 or row >= len(self._filtered_servers):
+        # cursor_row 是"可见行"的下标,而可见行 == _rows,二者同源。
+        if row is None or row < 0 or row >= len(self._rows):
             return None
-        return self._filtered_servers[row]
+        return self._rows[row]
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-input":
@@ -683,13 +709,19 @@ class MainScreen(Screen):
 
     def action_cursor_up(self) -> None:
         table = self.query_one("#main-table", DataTable)
-        if table.cursor_row > 0:
-            table.move_cursor(row=table.cursor_row - 1)
+        target = table.cursor_row - 1
+        while target >= 0 and self._rows[target] is None:
+            target -= 1
+        if target >= 0:
+            table.move_cursor(row=target)
 
     def action_cursor_down(self) -> None:
         table = self.query_one("#main-table", DataTable)
-        if table.cursor_row < len(self._filtered_servers) - 1:
-            table.move_cursor(row=table.cursor_row + 1)
+        target = table.cursor_row + 1
+        while target < len(self._rows) and self._rows[target] is None:
+            target += 1
+        if target < len(self._rows):
+            table.move_cursor(row=target)
 
     def action_connect_server(self) -> None:
         server = self._get_selected_server()

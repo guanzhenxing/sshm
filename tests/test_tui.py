@@ -784,3 +784,131 @@ async def test_import_wrong_password_shows_friendly_error(monkeypatch):
             assert isinstance(app.screen, ImportForm)
             # 错误标签回显"解密失败"（而非空白的"导入失败："）
             assert "解密失败" in str(app.screen.query_one("#error-label", Label).content)
+
+
+# ── 12. 分组列表与备注列 ──────────────────────────────────
+
+
+@pytest.fixture
+def app_with_grouped_servers(monkeypatch):
+    """4 台服务器分布在两个 group（含备注），用于分组与备注测试。"""
+    servers = [
+        ServerConfig(name="alpha", host="1.1.1.1", port=22, user="root",
+                     auth_type="password", password="x",
+                     group="prod", notes="生产环境主节点"),
+        ServerConfig(name="bravo", host="2.2.2.2", port=22, user="deploy",
+                     auth_type="key", key_path="~/.ssh/id_rsa",
+                     group="dev", notes=""),
+        ServerConfig(name="charlie", host="3.3.3.3", port=2222, user="admin",
+                     auth_type="password", password="z",
+                     group="prod", notes="跳板机"),
+        ServerConfig(name="delta", host="4.4.4.4", port=22, user="root",
+                     auth_type="password", password="w",
+                     group="", notes=""),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "vault.enc")
+        vault = Vault(path)
+        vault.init(TEST_PASSWORD)
+        for s in servers:
+            vault.add_server(s, TEST_PASSWORD)
+        monkeypatch.setattr("sshm.tui.load_password", lambda: None)
+        monkeypatch.setattr("sshm.tui.store_password", lambda *a, **k: None)
+        yield SSHManagerApp(vault_path=path)
+
+
+async def test_group_headers_for_multiple_groups(app_with_grouped_servers):
+    """多分组时表格出现分组头行(── group (N) ──)，空组标"未分组"。
+
+    4 台服务器: prod(alpha+charlie) | dev(bravo) | ""(delta)
+    """
+    app = app_with_grouped_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        table = _table(app)
+
+        # 5 行: prod 头(1) + alpha(1) + charlie(1) + dev 头(1) + bravo(1)
+        #  + 未分组头(1) + delta(1) = 7 total
+        assert table.row_count == 7
+
+        # 可见分组头文本
+        assert _row_contains(table, "── prod")
+        assert _row_contains(table, "── dev")
+        assert _row_contains(table, "── 未分组")
+
+        # 所有服务器可见
+        for name in ("alpha", "bravo", "charlie", "delta"):
+            assert _row_contains(table, name)
+
+
+async def test_single_group_no_header(app_with_servers):
+    """只有一种分组(空组)时不出现分组头行，保持扁平列表(回归保护)。"""
+    app = app_with_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        table = _table(app)
+        # 无分组头:alpha + beta + gamma = 3 rows
+        assert table.row_count == 3
+        assert not _row_contains(table, "──")
+
+
+async def test_notes_column_shows_remarks(app_with_grouped_servers):
+    """备注列展示各服务器的备注内容。"""
+    app = app_with_grouped_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        assert _row_contains(_table(app), "生产环境主节点")
+        assert _row_contains(_table(app), "跳板机")
+
+
+async def test_cursor_skips_group_header_rows(app_with_grouped_servers):
+    """多分组时光标跳过标题行（不卡住、不选中 None）。"""
+    app = app_with_grouped_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        table = _table(app)
+
+        # 行结构：row0=dev 头, row1=bravo, row2=prod 头, row3=alpha, row4=charlie,
+        #         row5=未分组头, row6=delta
+        main = next(s for s in app.screen_stack if isinstance(s, MainScreen))
+        # 行 0 是标题（None），_get_selected_server 返回 None
+        assert main._get_selected_server() is None
+
+        # 按下 → 跳过标题到 bravo(第一个数据行,索引 1)
+        await pilot.press("down")
+        await pilot.pause()
+        assert table.cursor_row == 1
+        assert main._get_selected_server() is not None
+        assert main._get_selected_server().name == "bravo"
+
+        # bravo → 跳过 prod 标题(row2) → alpha(row3)
+        await pilot.press("down")
+        assert table.cursor_row == 3
+        assert main._get_selected_server().name == "alpha"
+
+        # alpha → charlie(row4)
+        await pilot.press("down")
+        assert table.cursor_row == 4
+        assert main._get_selected_server().name == "charlie"
+
+        # charlie → 跳过未分组标题(row5) → delta(row6)
+        await pilot.press("down")
+        assert table.cursor_row == 6
+        assert main._get_selected_server().name == "delta"
+
+        # 上移:delta → 跳过未分组标题 → charlie(row4)
+        await pilot.press("up")
+        assert table.cursor_row == 4
+        assert main._get_selected_server().name == "charlie"
+
+
+async def test_connect_skips_header_rows(app_with_grouped_servers):
+    """光标在分组标题行上按回车不连接（_get_selected_server→None,action 跳过）。"""
+    app = app_with_grouped_servers
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        # 默认 cursor_row=0 即标题行，回车无效
+        await pilot.press("enter")
+        await pilot.pause()
+    # 标题行不连接:return_value 仍为 None（未退出）
+    assert app.return_value is None
