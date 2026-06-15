@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.4] - 2026-06-15
+
+### 修复
+
+- **主屏无法选中/连接服务器**：进主屏默认选中第一台、底部有 `enter` 提示，但①方向键选不了别的服务器（`focus=None` 时方向键不被处理）；②鼠标点击后能选了，底部 `enter` 提示却消失、回车无效（点击让 DataTable 获得焦点，Footer 改显表格绑定、且 DataTable 的 `enter→select_cursor` 吞掉回车）。修复：DataTable 设 `can_focus=False`（点击只移动光标、不抢焦点，Footer 提示不再消失、回车由主屏处理）；MainScreen 加 `up/down` 绑定支持键盘导航。回车现在连接的是实际选中项。
+
 ## [0.1.3] - 2026-06-15
 
 ### 修复
@@ -47,6 +53,7 @@
 
 - TUI 从单 mount 迁移到**多 Screen 架构**：`PasswordScreen` / `MainScreen` / `ServerForm` / `TransferForm`，`SSHManagerApp` 退化为协调者；每屏自带 Footer+BINDINGS（消除重复提示行）。
 
+[0.1.4]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.3
 [0.1.2]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/guanzhenxing/sshm/releases/tag/v0.1.1
