@@ -48,7 +48,7 @@ def _is_host_key_changed(banner: bytes) -> bool:
 def _handle_host_key_change(host: str) -> None:
     """删除 known_hosts 中指定主机的旧 key 并提示用户。"""
     print(f"\nHost key for {host} has changed (server may have been reinstalled).")
-    print(f"Removing old key from known_hosts...")
+    print("Removing old key from known_hosts...")
     subprocess.run(
         ["ssh-keygen", "-R", host],
         capture_output=True,
@@ -70,7 +70,7 @@ def _ssh_with_key(server: ServerConfig) -> int:
     """密钥认证 SSH 连接。"""
     cmd = _build_ssh_key_cmd(server)
 
-    for attempt in range(_MAX_HOST_KEY_RETRIES + 1):
+    for _attempt in range(_MAX_HOST_KEY_RETRIES + 1):
         print(f"Connecting to {server.user}@{server.host}:{server.port} ...")
         sys.stdout.flush()
 
@@ -100,8 +100,8 @@ def _ssh_with_password(server: ServerConfig) -> int:
 
     支持 host key 变更自动修复：检测到 WARNING 后删除旧 key 并重试。
     """
-    for attempt in range(_MAX_HOST_KEY_RETRIES + 1):
-        if attempt > 0:
+    for _attempt in range(_MAX_HOST_KEY_RETRIES + 1):
+        if _attempt > 0:
             print(f"Retrying connection to {server.user}@{server.host}:{server.port} ...")
         rc, retry = _ssh_with_password_once(server)
         if rc == 0:
