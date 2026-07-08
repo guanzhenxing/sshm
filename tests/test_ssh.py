@@ -1,10 +1,15 @@
 """ssh 模块单元测试。
 
-仅覆盖纯逻辑（交互提示检测、密钥认证命令构建）——真实 ssh 连接需要系统 sshd，
-见 CONTRIBUTING.md 的「手动冒烟清单」。
+仅覆盖纯逻辑（交互提示检测、host key 变更检测、密钥认证命令构建）——真实 ssh
+连接需要系统 sshd，见 CONTRIBUTING.md 的「手动冒烟清单」。
 """
 
-from sshm.ssh import CONNECT_TIMEOUT, _build_ssh_key_cmd, _needs_user_input
+from sshm.ssh import (
+    CONNECT_TIMEOUT,
+    _build_ssh_key_cmd,
+    _is_host_key_changed,
+    _needs_user_input,
+)
 from sshm.vault import ServerConfig
 
 
@@ -35,6 +40,42 @@ class TestNeedsUserInput:
 
     def test_plain_banner_without_prompt(self):
         assert _needs_user_input(b"Last login: Fri Jun 13 10:00:00 2026 from 10.0.0.1") is False
+
+
+class TestIsHostKeyChanged:
+    def test_detects_remote_host_identification_changed(self):
+        banner = b"""@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+"""
+        assert _is_host_key_changed(banner) is True
+
+    def test_detects_possible_dns_spoofing(self):
+        banner = (
+            b"WARNING: POSSIBLE DNS SPOOFING DETECTED!\n"
+            b"The RSA host key for example.com has changed."
+        )
+        assert _is_host_key_changed(banner) is True
+
+    def test_detects_host_key_verification_failed(self):
+        assert _is_host_key_changed(b"Host key verification failed.") is True
+
+    def test_normal_banner_is_not_host_key_change(self):
+        assert _is_host_key_changed(
+            b"Last login: Fri Jun 13 10:00:00 2026 from 10.0.0.1"
+        ) is False
+
+    def test_password_prompt_is_not_host_key_change(self):
+        assert _is_host_key_changed(b"admin@1.2.3.4's password: ") is False
+
+    def test_connection_refused_is_not_host_key_change(self):
+        assert _is_host_key_changed(
+            b"ssh: connect to host 1.2.3.4 port 22: Connection refused"
+        ) is False
+
+    def test_empty_banner(self):
+        assert _is_host_key_changed(b"") is False
 
 
 class TestBuildSshKeyCmd:

@@ -9,7 +9,14 @@ import termios
 import time
 import tty
 
+from sshm.ssh import CONNECT_TIMEOUT, _needs_user_input
 from sshm.vault import ServerConfig
+
+# scp 共用的 SSH 选项
+_SCP_SSH_OPTS = [
+    "-o", f"ConnectTimeout={CONNECT_TIMEOUT}",
+    "-o", "StrictHostKeyChecking=accept-new",
+]
 
 
 def scp_upload(server: ServerConfig, local_path: str, remote_path: str) -> int:
@@ -26,8 +33,8 @@ def scp_download(server: ServerConfig, remote_path: str, local_path: str) -> int
 
 def _build_scp_cmd(server: ServerConfig, source: str, destination: str) -> list[str]:
     """构建 scp 命令行。注意 scp 使用大写 -P 指定端口。"""
-    cmd = ["scp"]
-    cmd.extend(["-P", str(server.port)])
+    cmd = ["scp", "-P", str(server.port)]
+    cmd.extend(_SCP_SSH_OPTS)
     if server.auth_type == "key" and server.key_path:
         cmd.extend(["-i", server.key_path])
     cmd.extend([source, destination])
@@ -37,7 +44,12 @@ def _build_scp_cmd(server: ServerConfig, source: str, destination: str) -> list[
 def _run_scp_with_auth(server: ServerConfig, cmd: list[str]) -> int:
     """执行 scp 命令。"""
     if server.auth_type == "key":
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            if stderr:
+                sys.stderr.write(stderr + "\n")
+                sys.stderr.flush()
         return result.returncode
     else:
         return _scp_with_password(server, cmd)
@@ -65,13 +77,15 @@ def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
 
         while True:
             sources = [fd]
-            if authenticated:
+            if authenticated or _needs_user_input(output):
                 sources.append(sys.stdin)
 
             rlist, _, _ = select.select(sources, [], [], 60)
 
             if not rlist:
                 if not authenticated:
+                    if output:
+                        os.write(sys.stdout.fileno(), output)
                     raise TimeoutError(f"SCP timed out for {server.user}@{server.host}")
                 continue
 
@@ -85,6 +99,12 @@ def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
 
                 if not authenticated:
                     output += data
+
+                    # 处理 host key 确认等交互提示
+                    if _needs_user_input(output):
+                        os.write(sys.stdout.fileno(), output)
+                        output = b""
+
                     if b"password:" in output.lower():
                         os.write(fd, password.encode("utf-8") + b"\n")
                         time.sleep(0.3)
@@ -92,7 +112,12 @@ def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
                         if r2:
                             check = os.read(fd, 1024)
                             output += check
-                            if b"denied" in check.lower() or b"failed" in check.lower():
+                            rejected = (
+                                b"password:" in check.lower()
+                                or b"denied" in check.lower()
+                                or b"failed" in check.lower()
+                            )
+                            if rejected:
                                 os.write(sys.stdout.fileno(), output)
                                 raise PermissionError(
                                     f"Authentication failed for {server.user}@{server.host}"
@@ -111,7 +136,9 @@ def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
                     break
                 os.write(fd, key)
 
-    except (TimeoutError, PermissionError):
+    except (TimeoutError, PermissionError) as e:
+        sys.stdout.buffer.write(f"\r\n{e}\r\n".encode())
+        sys.stdout.buffer.flush()
         os.waitpid(pid, os.WNOHANG)
         return 1
     finally:
@@ -120,6 +147,11 @@ def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
             except termios.error:
                 pass
+
+    # 连接失败但未能认证 — 刷出未显示的 output
+    if not authenticated and output:
+        os.write(sys.stdout.fileno(), output)
+        sys.stdout.flush()
 
     _, status = os.waitpid(pid, 0)
     return status
