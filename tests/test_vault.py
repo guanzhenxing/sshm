@@ -86,6 +86,21 @@ class TestServerConfig:
         assert d["port"] == 22
         assert isinstance(d, dict)
 
+    def test_last_connected_default_none(self):
+        server = ServerConfig(
+            name="test", host="1.2.3.4", user="root",
+            auth_type="key", key_path="/key",
+        )
+        assert server.last_connected is None
+
+    def test_last_connected_from_dict_backward_compat(self):
+        """旧 vault 数据缺少 last_connected 字段时应默认为 None。"""
+        server = ServerConfig.from_dict({
+            "name": "old", "host": "1.2.3.4", "user": "root",
+            "auth_type": "key", "key_path": "/key",
+        })
+        assert server.last_connected is None
+
 
 class TestVault:
     def setup_method(self):
@@ -167,6 +182,27 @@ class TestVault:
         servers = self.vault.list_servers(self.password)
         assert servers[0].host == "5.6.7.8"
         assert servers[0].port == 2222
+
+    def test_record_last_connected(self):
+        self.vault.init(self.password)
+        s = ServerConfig(
+            name="srv", host="1.2.3.4", user="root",
+            auth_type="password", password="pass",
+        )
+        self.vault.add_server(s, self.password)
+        assert s.last_connected is None
+        self.vault.record_last_connected("srv", self.password)
+        servers = self.vault.list_servers(self.password)
+        assert servers[0].last_connected is not None
+        # 应是 ISO 格式，可解析
+        from datetime import datetime
+        dt = datetime.fromisoformat(servers[0].last_connected)  # type: ignore[arg-type]
+        assert dt is not None
+
+    def test_record_last_connected_nonexistent_silent(self):
+        """对不存在的服务器记录时间应静默失败（不抛异常）。"""
+        self.vault.init(self.password)
+        self.vault.record_last_connected("nonexistent", self.password)
 
     def test_load_nonexistent_raises(self):
         with pytest.raises(FileNotFoundError):

@@ -70,6 +70,17 @@ def cmd_add(args):
     port_str = input("  Port [22]: ")
     port = int(port_str) if port_str else 22
     user = input("  User: ")
+
+    # 重复检测：按 host:port:user 匹配
+    servers = vault.list_servers(password)
+    dup = next((s for s in servers if s.host == host and s.port == port and s.user == user), None)
+    if dup:
+        print(f"Server '{dup.name}' already targets {user}@{host}:{port}.")
+        confirm = input("  Continue adding anyway? (y/N): ")
+        if confirm.lower() != "y":
+            print("Cancelled.")
+            return
+
     auth_type = input("  Auth type (key/password): ")
     key_path = None
     pwd = None
@@ -96,11 +107,18 @@ def cmd_ls(args):
     if not servers:
         print("(no servers configured — use 'sshm add' to add one)")
         return
-    print(f"  {'#':<4} {'Name':<16} {'Address':<20} {'User':<10} {'Auth':<6} {'Group'}")
-    print(f"  {'---':<4} {'---':<16} {'---':<20} {'---':<10} {'---':<6} {'---'}")
+    header = f"  {'#':<4} {'Name':<16} {'Address':<22} {'User':<10} {'Auth':<6} {'Group':<12} Last"
+    print(header)
+    sep = f"  {'---':<4} {'---':<16} {'---':<22} {'---':<10} {'---':<6} {'---':<12} ---"
+    print(sep)
     for i, s in enumerate(servers, 1):
         auth_label = "key" if s.auth_type == "key" else "pwd"
-        print(f"  {i:<4} {s.name:<16} {s.host:<20} {s.user:<10} {auth_label:<6} {s.group}")
+        last = _format_last_connected(s.last_connected)
+        row = (
+            f"  {i:<4} {s.name:<16} {s.host:<22} "
+            f"{s.user:<10} {auth_label:<6} {s.group:<12} {last}"
+        )
+        print(row)
 
 
 def cmd_connect(args):
@@ -113,17 +131,21 @@ def cmd_connect(args):
         print("No servers configured. Add one with 'sshm add' first.")
         sys.exit(1)
     server = _find_server(servers, args.server)
-    sys.exit(ssh_connect(server))
+    rc = ssh_connect(server)
+    if rc == 0:
+        vault.record_last_connected(server.name, password)
+    sys.exit(rc)
 
 
 def cmd_edit(args):
     """处理 edit 命令。"""
     vault = Vault(args.vault)
-    password = get_vault_password(args, vault)
-    servers = vault.list_servers(password)
+    master = get_vault_password(args, vault)
+    servers = vault.list_servers(master)
     server = _find_server(servers, args.server)
     print(f"Editing '{server.name}' (press Enter to keep current value):")
-    updates = {}
+    updates: dict[str, object] = {}
+
     new_host = input(f"  Host [{server.host}]: ")
     if new_host:
         updates["host"] = new_host
@@ -133,14 +155,39 @@ def cmd_edit(args):
     new_user = input(f"  User [{server.user}]: ")
     if new_user:
         updates["user"] = new_user
+
+    # 认证方式
+    new_auth = input(f"  Auth type (key/password) [{server.auth_type}]: ")
+    if new_auth and new_auth != server.auth_type:
+        updates["auth_type"] = new_auth
+        if new_auth == "key":
+            new_key = input("  Key path: ")
+            if new_key:
+                updates["key_path"] = new_key
+            updates["password"] = None  # 清除旧密码
+        else:
+            new_pwd = get_password("  Server password: ")
+            if new_pwd:
+                updates["password"] = new_pwd
+            updates["key_path"] = None  # 清除旧 key
+    elif server.auth_type == "key":
+        new_key = input(f"  Key path [{server.key_path}]: ")
+        if new_key:
+            updates["key_path"] = new_key
+    else:
+        new_pwd = get_password("  Server password (Enter to keep): ")
+        if new_pwd:
+            updates["password"] = new_pwd
+
     new_group = input(f"  Group [{server.group}]: ")
     if new_group:
         updates["group"] = new_group
     new_notes = input(f"  Notes [{server.notes}]: ")
     if new_notes:
         updates["notes"] = new_notes
+
     if updates:
-        vault.edit_server(server.name, updates, password)
+        vault.edit_server(server.name, updates, master)  # type: ignore[arg-type]
         print(f"Server '{server.name}' updated.")
     else:
         print("No changes.")
@@ -253,6 +300,28 @@ def cmd_import(args):
         print(f"  renamed: {old} → {new}")
 
 
+def _format_last_connected(ts: str | None) -> str:
+    """将 ISO 时间戳格式化为可读的相对时间或短日期。"""
+    if not ts:
+        return "-"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts)
+        now = datetime.now(timezone.utc)
+        diff = (now - dt.replace(tzinfo=timezone.utc)).total_seconds()
+        if diff < 60:
+            return "just now"
+        if diff < 3600:
+            return f"{int(diff // 60)}m ago"
+        if diff < 86400:
+            return f"{int(diff // 3600)}h ago"
+        if diff < 604800:
+            return f"{int(diff // 86400)}d ago"
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return "-"
+
+
 def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfig:
     """按名称或序号查找服务器。"""
     if name_or_index.isdigit():
@@ -293,7 +362,14 @@ def run_tui():
     time.sleep(0.05)
 
     if isinstance(result, ServerConfig):
-        sys.exit(ssh_connect(result))
+        rc = ssh_connect(result)
+        if rc == 0:
+            try:
+                vault = Vault(vault_path)
+                vault.record_last_connected(result.name, app.password)
+            except Exception:
+                pass
+        sys.exit(rc)
 
     if isinstance(result, tuple) and len(result) == 5 and result[0] == "transfer":
         _, server, mode, local, remote = result

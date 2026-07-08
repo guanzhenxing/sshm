@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sshm.cli import get_password, get_vault_password, main
+from sshm.cli import _format_last_connected, get_password, get_vault_password, main
 from sshm.vault import ServerConfig, Vault
 
 MASTER_PW = "test-master-password"
@@ -98,6 +98,50 @@ class TestGetVaultPassword:
         assert result == MASTER_PW
         mock_load.assert_not_called()
         mock_store.assert_not_called()
+
+
+class TestFormatLastConnected:
+    def test_none_returns_dash(self):
+        assert _format_last_connected(None) == "-"
+
+    def test_empty_string_returns_dash(self):
+        assert _format_last_connected("") == "-"
+
+    def test_just_now(self):
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).isoformat()
+        assert _format_last_connected(ts) == "just now"
+
+    def test_minutes_ago(self):
+        import datetime as dt_mod
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc) - dt_mod.timedelta(minutes=5)
+        result = _format_last_connected(dt.isoformat())
+        assert result == "5m ago"
+
+    def test_hours_ago(self):
+        import datetime as dt_mod
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc) - dt_mod.timedelta(hours=3)
+        result = _format_last_connected(dt.isoformat())
+        assert result == "3h ago"
+
+    def test_days_ago(self):
+        import datetime as dt_mod
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc) - dt_mod.timedelta(days=2)
+        result = _format_last_connected(dt.isoformat())
+        assert result == "2d ago"
+
+    def test_older_shows_date(self):
+        import datetime as dt_mod
+        from datetime import datetime, timezone
+        dt = datetime.now(timezone.utc) - dt_mod.timedelta(days=10)
+        result = _format_last_connected(dt.isoformat())
+        assert result == dt.strftime("%Y-%m-%d")
+
+    def test_invalid_string_returns_dash(self):
+        assert _format_last_connected("not-a-date") == "-"
 
 
 class TestCLIParsing:

@@ -22,6 +22,7 @@ class ServerConfig:
     password: str | None = None
     group: str = ""
     notes: str = ""
+    last_connected: str | None = None
 
     def __post_init__(self):
         errors = []
@@ -152,6 +153,15 @@ class Vault:
         data["servers"][idx].update(updates)
         ServerConfig.from_dict(data["servers"][idx])
         self.save(data, password)
+
+    def record_last_connected(self, name: str, password: str) -> None:
+        """记录服务器最后连接时间。静默失败——不影响主流程。"""
+        try:
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).isoformat()
+            self.edit_server(name, {"last_connected": ts}, password)
+        except Exception:
+            pass
 
     def merge_servers(
         self,

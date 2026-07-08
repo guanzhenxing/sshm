@@ -241,6 +241,17 @@ class ServerForm(Screen):
 
         app = self.app
         if isinstance(app, SSHManagerApp):
+            # 重复检测：新增时检查 host:port:user 是否已存在
+            if self.server is None:
+                dup = next(
+                    (s for s in app.servers
+                     if s.host == host and s.port == port and s.user == user),
+                    None,
+                )
+                if dup:
+                    self.query_one("#error-label", Label).update(
+                        f"注意：'{dup.name}' 已指向 {user}@{host}:{port}（仍可保存）"
+                    )
             app.do_save_server(cfg, self.server)
 
     def _close(self) -> None:
@@ -694,7 +705,7 @@ class MainScreen(Screen):
         # 不可聚焦：点击某行只移动光标、不抢焦点。这样 Footer 始终显示主屏绑定
         # （"连接"提示不消失），且回车不会被 DataTable 的 enter→select_cursor 吞掉。
         table.can_focus = False
-        table.add_columns("#", "Name", "Address", "User", "Auth", "Notes")
+        table.add_columns("#", "Name", "Address", "User", "Auth", "Notes", "Last")
 
     def _refresh_table(self) -> None:
         app = self.app
@@ -712,9 +723,9 @@ class MainScreen(Screen):
         table.clear()
         if not filtered:
             if not app.servers:
-                table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "")
+                table.add_row("", "(empty — 按 a 添加你的第一台服务器)", "", "", "", "", "")
             else:
-                table.add_row("", "(no match)", "", "", "", "")
+                table.add_row("", "(no match)", "", "", "", "", "")
             self._rows = []
             return
 
@@ -738,13 +749,14 @@ class MainScreen(Screen):
         idx = 0
         for g in group_names:
             header = f"── {g or '未分组'} ({len(groups[g])}) ──"
-            table.add_row(header, "", "", "", "", "")
+            table.add_row(header, "", "", "", "", "", "")
             self._rows.append(None)  # 分组头,不可选中
             for s in groups[g]:  # vault 原始顺序，与 CLI 编号一致
                 idx += 1
                 auth_label = "key" if s.auth_type == "key" else "pwd"
                 notes = s.notes if s.notes else ""
-                table.add_row(str(idx), s.name, s.host, s.user, auth_label, notes)
+                last = _format_last(s.last_connected)
+                table.add_row(str(idx), s.name, s.host, s.user, auth_label, notes, last)
                 self._rows.append(s)
         # 光标默认跳到第一个数据行（跳过标题行），避免 enter/d 等默认无响应
         first_data = next((i for i, r in enumerate(self._rows) if r is not None), 0)
@@ -996,3 +1008,25 @@ class SSHManagerApp(App):
                 return
             except NoMatches:
                 continue
+
+
+def _format_last(ts: str | None) -> str:
+    """将 ISO 时间戳格式化为可读的相对时间。"""
+    if not ts:
+        return "-"
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts)
+        now = datetime.now(timezone.utc)
+        diff = (now - dt.replace(tzinfo=timezone.utc)).total_seconds()
+        if diff < 60:
+            return "just now"
+        if diff < 3600:
+            return f"{int(diff // 60)}m ago"
+        if diff < 86400:
+            return f"{int(diff // 3600)}h ago"
+        if diff < 604800:
+            return f"{int(diff // 86400)}d ago"
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return "-"
