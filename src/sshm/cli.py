@@ -322,6 +322,20 @@ def _format_last_connected(ts: str | None) -> str:
         return "-"
 
 
+def _detect_is_dark() -> bool:
+    """检测 macOS 系统是否为深色外观。"""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=3,
+        )
+        # 浅色模式下该 key 不存在（returncode != 0），深色模式下 stdout 为 "Dark"
+        return r.returncode == 0 and "Dark" in r.stdout
+    except Exception:
+        return True  # 检测失败默认深色
+
+
 def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfig:
     """按名称或序号查找服务器。"""
     if name_or_index.isdigit():
@@ -347,7 +361,12 @@ def run_tui():
     args, _ = parser.parse_known_args()
     vault_path = getattr(args, "vault", "~/.sshm/vault.enc")
 
-    app = SSHManagerApp(vault_path=vault_path, no_cache=getattr(args, "no_cache", False))
+    theme = getattr(args, "theme", "system")
+    app = SSHManagerApp(
+        vault_path=vault_path,
+        no_cache=getattr(args, "no_cache", False),
+        theme=theme,
+    )
     result = app.run()
 
     # 确保终端恢复
@@ -391,6 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-cache", action="store_true", help="跳过 Keychain 缓存")
     parser.add_argument("--vault", default="~/.sshm/vault.enc", help="vault 文件路径")
+    parser.add_argument(
+        "--theme", choices=["dark", "light", "system"], default="system",
+        help="TUI 主题：dark（深色）、light（浅色）、system（跟随 macOS 系统外观，默认）",
+    )
 
     sub = parser.add_subparsers(dest="command")
 

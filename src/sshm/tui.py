@@ -874,16 +874,40 @@ class SSHManagerApp(App):
 
     TITLE = "sshm — SSH Server Manager"
     SUB_TITLE = f"v{__version__}"
+    BINDINGS = [("t", "toggle_theme", "切换主题")]
 
-    def __init__(self, vault_path: str = "~/.sshm/vault.enc", no_cache: bool = False):
+    def __init__(
+        self,
+        vault_path: str = "~/.sshm/vault.enc",
+        no_cache: bool = False,
+        theme: str = "system",
+    ):
         super().__init__()
         self.vault = Vault(vault_path)
         self.password = ""
         self.servers: list[ServerConfig] = []
         self._authenticated = False
         self.no_cache = no_cache
+        self._theme_pref = theme
+
+    def _apply_theme(self) -> None:
+        """根据偏好设置主题（必须在 on_mount 之后调用才能生效）。"""
+        if self._theme_pref == "light":
+            self.theme = "textual-light"
+        elif self._theme_pref == "dark":
+            self.theme = "textual-dark"
+        else:  # system
+            from sshm.cli import _detect_is_dark
+            self.theme = "textual-dark" if _detect_is_dark() else "textual-light"
+
+    def action_toggle_theme(self) -> None:
+        """切换深浅色主题。"""
+        self.theme = "textual-light" if self.theme == "textual-dark" else "textual-dark"
+        kind = "深色" if self.theme == "textual-dark" else "浅色"
+        self.notify(f"已切换到{kind}主题", timeout=2)
 
     def on_mount(self) -> None:
+        self._apply_theme()
         if self.no_cache:
             self._show_password_screen()
             return
