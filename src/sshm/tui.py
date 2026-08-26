@@ -13,6 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label
 
 from sshm import __version__
+from sshm.format import format_last_connected
 from sshm.io import read_export, write_export
 from sshm.session import load_password, store_password
 from sshm.vault import ServerConfig, Vault
@@ -122,6 +123,9 @@ class ServerForm(Screen):
     def __init__(self, server: ServerConfig | None = None):
         super().__init__()
         self.server = server
+        # host:port:user 重复警告的两步确认状态：首次提交只警告不保存，
+        # 再次提交才落盘；任意字段变更后撤销放行。
+        self._dup_warned = False
 
     def compose(self) -> ComposeResult:
         title = "编辑服务器" if self.server else "添加服务器"
@@ -187,6 +191,10 @@ class ServerForm(Screen):
         elif event.button.id == "btn-save":
             self._save()
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """任意字段变更 → 撤销「重复目标，再按一次保存」的放行状态。"""
+        self._dup_warned = False
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         field_ids = [
             "f-name", "f-host", "f-port", "f-user",
@@ -214,7 +222,15 @@ class ServerForm(Screen):
         if self.server and password == "***":
             password = self.server.password or ""
 
-        port = int(port_str) if port_str else 22
+        port = 22
+        if port_str:
+            try:
+                port = int(port_str)
+            except ValueError:
+                self.query_one("#error-label", Label).update(
+                    f"端口必须是数字，收到：{port_str!r}"
+                )
+                return
 
         if not name:
             self.query_one("#error-label", Label).update("名称不能为空")
@@ -241,17 +257,21 @@ class ServerForm(Screen):
 
         app = self.app
         if isinstance(app, SSHManagerApp):
-            # 重复检测：新增时检查 host:port:user 是否已存在
-            if self.server is None:
+            # 重复检测（新增时）：按 host:port:user 匹配。首次提交只警告，
+            # 用户再次提交才确认继续——与文案「再按一次保存继续添加」一致。
+            if self.server is None and not self._dup_warned:
                 dup = next(
                     (s for s in app.servers
                      if s.host == host and s.port == port and s.user == user),
                     None,
                 )
                 if dup:
+                    self._dup_warned = True
                     self.query_one("#error-label", Label).update(
-                        f"注意：'{dup.name}' 已指向 {user}@{host}:{port}（仍可保存）"
+                        f"注意：'{dup.name}' 已指向 {user}@{host}:{port}，"
+                        "再按一次保存继续添加"
                     )
+                    return
             app.do_save_server(cfg, self.server)
 
     def _close(self) -> None:
@@ -744,19 +764,22 @@ class MainScreen(Screen):
         if "" in groups:
             group_names.append("")  # 空组排最后
 
-        # 始终显示分组头行(None),单分组也不例外——用户需要看到分组名
+        # 行号取 vault 原始顺序（与 CLI `ls` / `connect N` 的编号一致）：
+        # 分组只改变展示顺序、不改编号——否则 TUI 里的 #3 和 `sshm connect 3`
+        # 会指向不同机器。用 id() 映射，避免 dataclass 按值相等时混淆同配置条目。
+        num_by_id = {id(s): i + 1 for i, s in enumerate(app.servers)}
         self._rows = []
-        idx = 0
         for g in group_names:
             header = f"── {g or '未分组'} ({len(groups[g])}) ──"
             table.add_row(header, "", "", "", "", "", "")
             self._rows.append(None)  # 分组头,不可选中
-            for s in groups[g]:  # vault 原始顺序，与 CLI 编号一致
-                idx += 1
+            for s in groups[g]:  # 组内保持 vault 原始顺序
                 auth_label = "key" if s.auth_type == "key" else "pwd"
                 notes = s.notes if s.notes else ""
-                last = _format_last(s.last_connected)
-                table.add_row(str(idx), s.name, s.host, s.user, auth_label, notes, last)
+                last = format_last_connected(s.last_connected)
+                table.add_row(
+                    str(num_by_id[id(s)]), s.name, s.host, s.user, auth_label, notes, last,
+                )
                 self._rows.append(s)
         # 光标默认跳到第一个数据行（跳过标题行），避免 enter/d 等默认无响应
         first_data = next((i for i, r in enumerate(self._rows) if r is not None), 0)
@@ -981,15 +1004,16 @@ class SSHManagerApp(App):
     def do_save_server(self, cfg: ServerConfig, original: ServerConfig | None) -> None:
         try:
             if original:
-                self.vault.remove_server(original.name, self.password)
-            self.vault.add_server(cfg, self.password)
+                # 原位更新：保持列表位置，并保留 last_connected（表单不采集该
+                # 字段，整体替换会把它清掉）。改名撞名由 edit_server 校验拒绝。
+                updates = {k: v for k, v in cfg.to_dict().items() if k != "last_connected"}
+                self.vault.edit_server(original.name, updates, self.password)
+            else:
+                self.vault.add_server(cfg, self.password)
             self.servers = self.vault.list_servers(self.password)
             self.close_form()
         except Exception as e:
-            try:
-                self.query_one("#error-label", Label).update(f"保存失败: {e}")
-            except Exception:
-                pass
+            self._show_form_error(f"保存失败: {e}")
 
     # ── 文件传输 ──────────────────────────────────
 
@@ -1032,25 +1056,3 @@ class SSHManagerApp(App):
                 return
             except NoMatches:
                 continue
-
-
-def _format_last(ts: str | None) -> str:
-    """将 ISO 时间戳格式化为可读的相对时间。"""
-    if not ts:
-        return "-"
-    try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(ts)
-        now = datetime.now(timezone.utc)
-        diff = (now - dt.replace(tzinfo=timezone.utc)).total_seconds()
-        if diff < 60:
-            return "just now"
-        if diff < 3600:
-            return f"{int(diff // 60)}m ago"
-        if diff < 86400:
-            return f"{int(diff // 3600)}h ago"
-        if diff < 604800:
-            return f"{int(diff // 86400)}d ago"
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        return "-"

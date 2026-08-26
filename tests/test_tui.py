@@ -956,3 +956,146 @@ async def test_connect_on_first_data_row_works(app_with_grouped_servers):
     # 回车连接了 alpha（而非因标题行被吞掉）
     assert isinstance(app.return_value, ServerConfig)
     assert app.return_value.name == "alpha"
+
+
+# ── 13. 表单校验与编辑语义（回归保护） ──────────────────────
+
+
+async def test_add_server_invalid_port_shows_error(app_with_vault):
+    """端口输入非数字 → 表单内提示错误，应用不崩溃、不落盘。
+
+    回归：此前 `int(port_str)` 在校验前执行且未捕获，Textual 直接崩溃退出。
+    """
+    from sshm.tui import ServerForm
+
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("a")
+        await pilot.pause()
+
+        await pilot.click("#f-name")
+        await pilot.press(*"beta")
+        await pilot.click("#f-host")
+        await pilot.press(*"5.6.7.8")
+        await pilot.click("#f-user")
+        await pilot.press(*"u")
+        await pilot.click("#f-auth")
+        await pilot.press(*"password")
+        await pilot.click("#f-password")
+        await pilot.press(*"x")
+        await pilot.click("#f-port")
+        await pilot.press(*"abc")
+        await pilot.click("#f-notes")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # 表单仍在前台（未崩溃、未关闭），错误标签可见
+        assert isinstance(app.screen, ServerForm)
+        assert "端口" in str(app.screen.query_one("#error-label", Label).content)
+        # 未落盘
+        assert len(app.vault.list_servers(TEST_PASSWORD)) == 1
+
+
+async def test_edit_server_preserves_position_and_last_connected(app_with_vault):
+    """编辑服务器 → 原位更新：位置不变、last_connected 不丢。
+
+    回归：此前编辑用 remove+add 实现——条目被挪到列表末尾、
+    last_connected（表单不采集）被清空。
+    """
+    from sshm.tui import ServerForm
+
+    app = app_with_vault
+    app.vault.add_server(
+        ServerConfig(name="bravo", host="2.2.2.2", port=22, user="root",
+                     auth_type="password", password="y"),
+        TEST_PASSWORD,
+    )
+    app.vault.record_last_connected("alpha", TEST_PASSWORD)
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        # 默认光标在第一个数据行 alpha → e 编辑 alpha
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, ServerForm)
+
+        # 只填备注（原为空），在最后字段回车提交
+        await pilot.click("#f-notes")
+        await pilot.press(*"hello-notes")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, MainScreen)
+        servers = app.vault.list_servers(TEST_PASSWORD)
+        assert [s.name for s in servers] == ["alpha", "bravo"]  # 位置不变
+        assert servers[0].last_connected is not None             # 时间戳保留
+        assert servers[0].notes == "hello-notes"                 # 修改生效
+
+
+async def test_add_duplicate_target_requires_second_submit(app_with_vault):
+    """新增与现有服务器同 host:port:user 的条目 → 首次提交只警告，第二次才保存。
+
+    回归：此前文案写「仍可保存」但首次提交就直接保存了，用户没有选择的机会。
+    """
+    from sshm.tui import ServerForm
+
+    app = app_with_vault
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        await pilot.press("a")
+        await pilot.pause()
+
+        # alpha = root@1.2.3.4:22；beta 填同目标
+        await pilot.click("#f-name")
+        await pilot.press(*"beta")
+        await pilot.click("#f-host")
+        await pilot.press(*"1.2.3.4")
+        await pilot.click("#f-user")
+        await pilot.press(*"root")
+        await pilot.click("#f-auth")
+        await pilot.press(*"password")
+        await pilot.click("#f-password")
+        await pilot.press(*"x")
+        await pilot.click("#f-notes")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # 首次提交：警告可见、未落盘
+        assert isinstance(app.screen, ServerForm)
+        assert "再按一次" in str(app.screen.query_one("#error-label", Label).content)
+        assert len(app.vault.list_servers(TEST_PASSWORD)) == 1
+
+        # 再次回车（焦点仍在 #f-notes）→ 确认保存
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        assert len(app.vault.list_servers(TEST_PASSWORD)) == 2
+
+
+async def test_row_numbers_match_cli_numbering(app_with_vault):
+    """分组改变展示顺序，但行号仍是 vault 原始顺序编号。
+
+    回归：此前 TUI 分组后按展示顺序重新编号，与 `sshm ls` / `sshm connect N`
+    的 vault 顺序编号错位——TUI 里的 #3 和 CLI 的 3 可能不是同一台。
+    """
+    app = app_with_vault
+    app.vault.add_server(
+        ServerConfig(name="bravo", host="2.2.2.2", port=22, user="root",
+                     auth_type="password", password="y", group="g1"),
+        TEST_PASSWORD,
+    )
+    # vault 顺序: alpha(未分组, #1), bravo(g1, #2)
+    # 展示顺序: g1 头 + bravo 在前, 未分组头 + alpha 在后
+    async with app.run_test(size=TEST_SIZE) as pilot:
+        await _authenticate(pilot)
+        table = _table(app)
+        rows = [
+            [_cell_to_str(table.get_cell(row_key, col_key)) for col_key in table.columns]
+            for row_key in table.rows
+        ]
+        bravo_row = next(r for r in rows if "bravo" in r)
+        alpha_row = next(r for r in rows if "alpha" in r)
+        # bravo 展示在前，但编号是 2（vault 顺序）
+        assert rows.index(bravo_row) < rows.index(alpha_row)
+        assert bravo_row[0] == "2"
+        assert alpha_row[0] == "1"
