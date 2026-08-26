@@ -18,10 +18,11 @@
 | [`__main__.py`](../src/sshm/__main__.py) | 入口：`python -m sshm` → `cli.main` |
 | [`cli.py`](../src/sshm/cli.py) | argparse 命令解析与路由；`run_tui()` 启动 TUI 并按返回值分发 |
 | [`crypto.py`](../src/sshm/crypto.py) | AES-256-GCM 加解密 + PBKDF2 派生密钥 |
-| [`vault.py`](../src/sshm/vault.py) | `ServerConfig` 数据类 + 加密 vault 读写 + fcntl 文件锁 |
+| [`vault.py`](../src/sshm/vault.py) | `ServerConfig` 数据类 + 加密 vault 读写（原子读-改-写）+ fcntl 文件锁 |
 | [`session.py`](../src/sshm/session.py) | Keychain 会话缓存（存/取/清主密码，TTL） |
-| [`ssh.py`](../src/sshm/ssh.py) | 基于 pty 的 SSH 连接（密钥 / 密码认证） |
-| [`transfer.py`](../src/sshm/transfer.py) | SCP 上传 / 下载 |
+| [`ssh.py`](../src/sshm/ssh.py) | `pty_connect` pty 中继（ssh/scp 共用；密钥与密码认证） |
+| [`transfer.py`](../src/sshm/transfer.py) | SCP 上传 / 下载（复用 `ssh.pty_connect`） |
+| [`format.py`](../src/sshm/format.py) | 展示格式化（相对时间等），CLI 与 TUI 共用 |
 | [`tui.py`](../src/sshm/tui.py) | Textual 交互式 TUI（见下文「TUI 架构」） |
 
 ## 技术选型
@@ -36,14 +37,16 @@ Python 在「必须加密」这一硬需求下综合最佳；macOS 自带 `pytho
 
 ## SSH 连接策略
 
-**为何用系统 ssh 而非 paramiko：** 直接 shell out 到系统 `ssh`/`scp`，获得完整终端仿真（颜色、`htop`/`vim` 等 TUI 程序）、SSH agent 转发、对 `~/.ssh/config` 的尊重，且无需重造 SSH 协议。
+**为何用系统 ssh 而非 paramiko：** 直接调用系统 `ssh`/`scp`，获得完整终端仿真（颜色、`htop`/`vim` 等 TUI 程序）、SSH agent 转发、对 `~/.ssh/config` 的尊重，且无需重造 SSH 协议。
 
-**密码认证用 pty 而非 sshpass：** 用 Python 标准库 `pty` 消除 sshpass 依赖。实现（[`ssh.py`](../src/sshm/ssh.py)）处理三个阶段：监听 SSH 输出检测 `password:` 提示 → 注入密码并验证未被拒 → 认证后双向中继用户终端与 SSH 会话。关键约束：
+**密钥与密码认证统一走 pty 中继（[`ssh.py`](../src/sshm/ssh.py) 的 `pty_connect`）：** ssh 与 scp 都在 pty 里运行，由中继循环桥接用户终端与会话 fd——输出实时可见、输入随时可写（包括加密私钥的 passphrase 提示、scp 的进度条）。scp（[`transfer.py`](../src/sshm/transfer.py)）直接复用同一实现。密码认证无需 sshpass。关键约束：
 
-- 认证前只监听 SSH 输出 fd，不监听 stdin（否则用户误按键会让 `select` 空转）。
-- 远端 MOTD/banner 在认证期间缓冲，登录成功后一并刷出，避免空白屏。
-- 密码提示检测 30 秒超时；超时则输出缓冲内容 + 诊断信息。
+- 密码注入完成（或无需密码）前只监听会话 fd、不监听 stdin（否则用户误按键会被发给 ssh）；但出现 yes/no 等交互提示时放行，让用户能确认。
+- 密码认证时，远端 MOTD/banner 在认证期间缓冲，登录成功后一并刷出，避免空白屏；密钥认证则全程实时中继。
+- 密码提示检测超时（ssh 30s / scp 60s）；超时则输出缓冲内容 + 诊断信息。
 - 发出密码后短暂 peek（0.3s sleep + 0.5s select）判断是立即重提示（密码错）还是继续（认证成功）。
+- host key 变更（重装系统等）：密码路径从缓冲 banner 检测，密钥路径从退出前的滚动输出窗口检测——都会清掉旧 key 并自动重试一次。
+- 返回值是 `waitstatus_to_exitcode` 的真实退出码（waitpid 裸状态码经 `sys.exit` 会截断成错误值）。
 
 已知限制：仅支持 keyboard-interactive 且提示非标准的服务器会超时，错误信息会引导用户手动测试连通性。
 
@@ -82,7 +85,12 @@ vault.enc = Salt(16B) || IV(12B) || ciphertext(变长) || auth tag(16B)
 
 ## Vault 并发
 
-多个 `sshm` 实例不能损坏 vault。写操作用 POSIX 建议锁：读用共享锁 `LOCK_SH`、写用独占锁 `LOCK_EX`，写后 `fsync`。实现见 [`vault.py`](../src/sshm/vault.py)。
+多个 `sshm` 实例不能损坏 vault，也不能相互丢更新。两层保护（[`vault.py`](../src/sshm/vault.py)）：
+
+- **读**：共享锁 `LOCK_SH`。
+- **读-改-写**（add/remove/edit/merge）：`_mutate` 在单把 `LOCK_EX` 排他锁内完成 解密 → 修改 → 加密写盘 + `fsync`，整个事务原子——分离的 load/save 两次加锁会在窗口内丢更新（后写覆盖先写）。
+- **name 唯一**：落盘层强制（`add_server` 拒绝重名、`edit_server` 拒绝改名撞名），与导入去重的业务键一致。
+- **解密缓存**：`load` 按（密码 + 文件 stat）缓存解密结果，文件一变即失效——一条 CLI 命令里「校验 + 载入」只做一次 600k 轮 PBKDF2。
 
 ## 会话缓存（Keychain）
 
@@ -116,7 +124,9 @@ TUI 基于 [Textual](https://github.com/Textualize/textual)，采用**多 Screen
 - `MainScreen.AUTO_FOCUS = ""`：故意为空，使焦点保持 `None`。这让本屏绑定直接生效，又避免未聚焦的 `DataTable` 用其 `enter→select_cursor` 吞掉回车。不要「改进」成聚焦表格。
 - **DataTable `can_focus = False`**：点击行只移动光标、不抢焦点，Footer 始终显示主屏绑定，"连接"提示不消失。
 - **退出绑定是 `app.quit` 而非裸 `quit`**：`action_quit` 定义在 App 上，Textual 不会从 Screen 命名空间上溯到 App 找方法，裸 `quit` 在 Screen 上会静默失效。其余主屏动作（`add_server` 等）能工作，是因为每个都在本屏有对应的 `action_*`。
-- **搜索框是过滤的唯一真相源**：`_refresh_table()` 读搜索框当前值；渲染列表（按 group 分组、组内按 name 排序）镜像到 `_rows`（`list[ServerConfig | None]`，`None` = 分组标题行），`_get_selected_server` 据此映射 `cursor_row`（而非未过滤的 `app.servers`）。搜索框内 **Enter 提交**查询（保留过滤、焦点还给主屏），**Esc** 清空回到全量。
+- **搜索框是过滤的唯一真相源**：`_refresh_table()` 读搜索框当前值；渲染列表按 group 分组（组间按首次出现顺序、空组最后，组内保持 vault 原始顺序），镜像到 `_rows`（`list[ServerConfig | None]`，`None` = 分组标题行），`_get_selected_server` 据此映射 `cursor_row`（而非未过滤的 `app.servers`）。搜索框内 **Enter 提交**查询（保留过滤、焦点还给主屏），**Esc** 清空回到全量。
+- **行号取 vault 原始顺序**：分组只改变展示顺序、不改编号——`#N` 与 `sshm ls` / `sshm connect N` 始终指向同一台（映射用 `id(s)`，不依赖 dataclass 按值相等）。
 - **方向键导航跳过标题行**：`action_cursor_up`/`action_cursor_down` 自动跳过 `_rows` 中的 `None`（分组标题），光标始终停在可操作的数据行上。
+- **编辑是原位更新**：`do_save_server` 对已有服务器走 `vault.edit_server`（保持列表位置、保留 `last_connected`）；新增重复目标（同 host:port:user）首次提交只警告、再次提交才保存。
 
 **退出契约**（`cli.run_tui` 按 `app.run()` 返回值分发）：`ServerConfig` → SSH 连接；`("transfer", server, mode, local, remote)` 五元组 → SCP 上传/下载；`None` → 落空。

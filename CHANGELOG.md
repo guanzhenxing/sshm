@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- **密钥认证 SSH 会话盲打**：`_ssh_with_key` 用 `subprocess` 捕获 stdout/stderr（0.2.0 为显示错误原因引入），会话输出全程被吞、成功退出时直接丢弃——用户只能盲打。密钥与密码认证统一走 pty 中继（`ssh.pty_connect`）：输出实时可见、加密私钥 passphrase 可输入、host key 变更自动清 key 重试；SCP 复用同一实现（密钥认证的 scp 进度可见、passphrase 不再挂死）。
+- **退出码修正**：pty 路径返回 waitpid 裸状态码（如 768），`sys.exit` 截断后成 0——连接失败被脚本当成成功。改为 `waitstatus_to_exitcode`。
+- **vault 不存在时死循环**：`get_vault_password` 把 `FileNotFoundError` 也当成「密码错误」无限重试（非 tty 下则是裸堆栈）。现在所有命令前置 `sshm init` 指引并退出码 1。
+- **TUI 表单非法端口崩溃**：`int(port_str)` 未捕获，输入非数字直接让 Textual 崩溃。现表单内提示、应用存活。
+- **CLI add/edit 裸异常**：非法端口、非法认证方式、重名等校验错误此前以 traceback 砸出；现友好提示 + 退出码 1。
+- **TUI 编辑丢数据**：编辑此前用 remove+add 实现——条目被挪到列表末尾、`last_connected` 被清空。改用 `vault.edit_server` 原位更新。
+- **TUI 行号与 CLI 编号错位**：分组重排展示顺序后按展示顺序重新编号，`#3` 与 `sshm connect 3` 可能指向不同机器。行号改为 vault 原始顺序。
+- **终端恢复误清 ISIG**：`_restore_terminal` 在 lflag 上清 `OPOST`（属 oflag 的位），macOS 上实际关掉 Ctrl-C 信号生成；且在正确恢复之后执行、反而破坏恢复。删除该兜底。
+- **vault 并发丢更新**：读-改-写此前 load（共享锁）与 save（独占锁）两次加锁，窗口内并发实例后写覆盖先写。`_mutate` 单把排他锁内完成整个事务。
+- **stdin EOF 卡死**：pty 中继在 stdin 读到 EOF 时直接 break 去 `waitpid`——macOS 上 pty master 未读空前子进程无法完成退出，子进程会卡死在 exiting 状态、`waitpid` 永久阻塞（`sshm connect x </dev/null` 即可复现）。现在 EOF 只停止监听输入，中继继续到子进程退出；退出后及时关闭 master fd。
+
+### 变更
+
+- **vault 强制 name 唯一**：`add_server` 拒绝重名、`edit_server` 拒绝改名撞名（与导入去重的业务键一致）。
+- **TUI 重复目标两步确认**：新增同 host:port:user 的服务器，首次提交只警告（「再按一次保存继续添加」），再次提交才落盘——与文案一致，用户真正有选择。
+- **每条命令省一次 PBKDF2**：`vault.load` 按（密码 + 文件 stat）缓存解密结果，文件一变即失效；一条命令少约 0.3-0.5s。
+- **去重**：时间格式化收敛到 `sshm.format.format_last_connected`；名称/序号查找收敛到 `vault.find_server`；`session.store_password` 删除无效的 `input=` 传参（security 经 `-w` argv 传值，已在注释说明可见性权衡）。
+
 ## [0.2.0] - 2026-06-15
 
 ### 新增
