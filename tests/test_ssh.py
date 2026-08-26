@@ -1,14 +1,19 @@
 """ssh 模块单元测试。
 
-仅覆盖纯逻辑（交互提示检测、host key 变更检测、密钥认证命令构建）——真实 ssh
-连接需要系统 sshd，见 CONTRIBUTING.md 的「手动冒烟清单」。
+纯逻辑部分（交互提示检测、host key 变更检测、命令构建）+ pty_connect 的
+行为级冒烟（真实子进程跑在 pty 里，不依赖 sshd）。真实 ssh 连接的手动
+冒烟清单见 CONTRIBUTING.md。
 """
+
+import os
+import sys
 
 from sshm.ssh import (
     CONNECT_TIMEOUT,
     _build_ssh_key_cmd,
     _is_host_key_changed,
     _needs_user_input,
+    pty_connect,
 )
 from sshm.vault import ServerConfig
 
@@ -101,3 +106,61 @@ class TestBuildSshKeyCmd:
         cmd = _build_ssh_key_cmd(server)
         assert "-i" not in cmd
         assert cmd[-1] == "admin@1.2.3.4"
+
+
+class TestPtyConnect:
+    """pty_connect 冒烟：密钥认证路径（password=None）的实时中继与退出码。
+
+    回归：密钥认证此前用 subprocess 捕获 stdout/stderr，会话输出全程被吞——
+    用户只能盲打。现在统一 pty 中继：输出实时透传、退出码原样返回。
+    """
+
+    def _fake_stdin(self, monkeypatch):
+        """stdin 换成保持打开的管道读端：select 不会 EOF，不干扰中继循环。"""
+        r, w = os.pipe()
+        monkeypatch.setattr(sys, "stdin", os.fdopen(r, "rb"))
+        return w
+
+    def test_exit_zero(self, monkeypatch):
+        w = self._fake_stdin(monkeypatch)
+        try:
+            rc = pty_connect(["/bin/sh", "-c", "exit 0"], password=None, timeout=5)
+        finally:
+            os.close(w)
+        assert rc == 0
+
+    def test_nonzero_exit_code_propagated(self, monkeypatch):
+        """退出码应是 waitstatus_to_exitcode 的值（3），而非 waitpid 裸状态（768）。
+
+        回归：此前返回裸 status，sys.exit(768) 截断后成 0——失败被当成成功。
+        """
+        w = self._fake_stdin(monkeypatch)
+        try:
+            rc = pty_connect(["/bin/sh", "-c", "exit 3"], password=None, timeout=5)
+        finally:
+            os.close(w)
+        assert rc == 3
+
+    def test_output_relayed_live(self, monkeypatch, capfd):
+        """子进程输出实时透传到 stdout（不再被捕获丢弃）。"""
+        w = self._fake_stdin(monkeypatch)
+        try:
+            rc = pty_connect(["/bin/echo", "hello-relay"], password=None, timeout=5)
+        finally:
+            os.close(w)
+        assert rc == 0
+        assert "hello-relay" in capfd.readouterr().out
+
+    def test_stdin_eof_does_not_hang_waitpid(self, monkeypatch, capfd):
+        """stdin EOF（如 sshm 被 `</dev/null` 调用）不提前结束会话。
+
+        回归：macOS 上 pty master 未读空前子进程无法完成退出——此前在
+        stdin EOF 时直接 break 去 waitpid，子进程卡死在 exiting 状态、
+        waitpid 永久阻塞。现在 EOF 只停止监听 stdin，中继继续到子进程退出。
+        """
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        monkeypatch.setattr(sys, "stdin", os.fdopen(devnull, "rb"))
+        rc = pty_connect(["/bin/sh", "-c", "echo still-alive; exit 5"],
+                         password=None, timeout=5)
+        assert rc == 5
+        assert "still-alive" in capfd.readouterr().out

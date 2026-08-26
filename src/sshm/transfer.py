@@ -1,15 +1,11 @@
-"""文件传输模块 — SCP 上传/下载。"""
+"""文件传输模块 — SCP 上传/下载。
 
-import os
-import pty
-import select
-import subprocess
-import sys
-import termios
-import time
-import tty
+密钥与密码认证统一复用 ssh.pty_connect 的 pty 中继：进度实时可见、
+host key 变更自动清 key 重试。此前密钥认证用 subprocess 捕获输出，
+scp 的加密私钥 passphrase 提示不可见（挂死）、成功时进度也看不到。
+"""
 
-from sshm.ssh import CONNECT_TIMEOUT, _needs_user_input
+from sshm.ssh import CONNECT_TIMEOUT, pty_connect
 from sshm.vault import ServerConfig
 
 # scp 共用的 SSH 选项
@@ -22,13 +18,13 @@ _SCP_SSH_OPTS = [
 def scp_upload(server: ServerConfig, local_path: str, remote_path: str) -> int:
     """通过 SCP 上传文件，返回进程退出码。"""
     cmd = _build_scp_cmd(server, local_path, f"{server.user}@{server.host}:{remote_path}")
-    return _run_scp_with_auth(server, cmd)
+    return _run_scp(server, cmd)
 
 
 def scp_download(server: ServerConfig, remote_path: str, local_path: str) -> int:
     """通过 SCP 下载文件，返回进程退出码。"""
     cmd = _build_scp_cmd(server, f"{server.user}@{server.host}:{remote_path}", local_path)
-    return _run_scp_with_auth(server, cmd)
+    return _run_scp(server, cmd)
 
 
 def _build_scp_cmd(server: ServerConfig, source: str, destination: str) -> list[str]:
@@ -41,117 +37,12 @@ def _build_scp_cmd(server: ServerConfig, source: str, destination: str) -> list[
     return cmd
 
 
-def _run_scp_with_auth(server: ServerConfig, cmd: list[str]) -> int:
-    """执行 scp 命令。"""
-    if server.auth_type == "key":
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            if stderr:
-                sys.stderr.write(stderr + "\n")
-                sys.stderr.flush()
-        return result.returncode
-    else:
-        return _scp_with_password(server, cmd)
-
-
-def _scp_with_password(server: ServerConfig, cmd: list[str]) -> int:
-    """密码认证的 SCP 传输。"""
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvp("scp", cmd)
-        os._exit(1)
-
-    password = server.password or ""
-    authenticated = False
-    output = b""
-
-    try:
-        old_attrs = termios.tcgetattr(sys.stdin)
-    except termios.error:
-        old_attrs = None
-
-    try:
-        if old_attrs is not None:
-            tty.setraw(sys.stdin.fileno())
-
-        while True:
-            sources = [fd]
-            if authenticated or _needs_user_input(output):
-                sources.append(sys.stdin)
-
-            rlist, _, _ = select.select(sources, [], [], 60)
-
-            if not rlist:
-                if not authenticated:
-                    if output:
-                        os.write(sys.stdout.fileno(), output)
-                    raise TimeoutError(f"SCP timed out for {server.user}@{server.host}")
-                continue
-
-            if fd in rlist:
-                try:
-                    data = os.read(fd, 4096)
-                except OSError:
-                    break
-                if not data:
-                    break
-
-                if not authenticated:
-                    output += data
-
-                    # 处理 host key 确认等交互提示
-                    if _needs_user_input(output):
-                        os.write(sys.stdout.fileno(), output)
-                        output = b""
-
-                    if b"password:" in output.lower():
-                        os.write(fd, password.encode("utf-8") + b"\n")
-                        time.sleep(0.3)
-                        r2, _, _ = select.select([fd], [], [], 0.5)
-                        if r2:
-                            check = os.read(fd, 1024)
-                            output += check
-                            rejected = (
-                                b"password:" in check.lower()
-                                or b"denied" in check.lower()
-                                or b"failed" in check.lower()
-                            )
-                            if rejected:
-                                os.write(sys.stdout.fileno(), output)
-                                raise PermissionError(
-                                    f"Authentication failed for {server.user}@{server.host}"
-                                )
-                        authenticated = True
-                        os.write(sys.stdout.fileno(), output)
-                else:
-                    os.write(sys.stdout.fileno(), data)
-
-            if sys.stdin in rlist and authenticated:
-                try:
-                    key = os.read(sys.stdin.fileno(), 4096)
-                except OSError:
-                    break
-                if not key:
-                    break
-                os.write(fd, key)
-
-    except (TimeoutError, PermissionError) as e:
-        sys.stdout.buffer.write(f"\r\n{e}\r\n".encode())
-        sys.stdout.buffer.flush()
-        os.waitpid(pid, os.WNOHANG)
-        return 1
-    finally:
-        if old_attrs is not None:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_attrs)
-            except termios.error:
-                pass
-
-    # 连接失败但未能认证 — 刷出未显示的 output
-    if not authenticated and output:
-        os.write(sys.stdout.fileno(), output)
-        sys.stdout.flush()
-
-    _, status = os.waitpid(pid, 0)
-    return status
+def _run_scp(server: ServerConfig, cmd: list[str]) -> int:
+    """执行 scp 命令（pty 中继；host key 变更自动重试）。"""
+    return pty_connect(
+        cmd,
+        password=server.password if server.auth_type == "password" else None,
+        timeout=60,
+        host=server.host,
+        desc=f"scp {server.user}@{server.host}",
+    )
