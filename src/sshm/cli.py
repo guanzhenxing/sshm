@@ -9,9 +9,10 @@ import time
 from cryptography.exceptions import InvalidTag
 
 from sshm import __version__
+from sshm.format import format_last_connected
 from sshm.io import EncryptedExportError, read_export, write_export
 from sshm.session import clear_password, load_password, store_password
-from sshm.vault import ServerConfig, Vault
+from sshm.vault import ServerConfig, Vault, find_server
 
 
 def get_password(prompt: str = "Master password: ") -> str:
@@ -19,11 +20,20 @@ def get_password(prompt: str = "Master password: ") -> str:
     return getpass.getpass(prompt)
 
 
+def _require_vault(vault: Vault) -> None:
+    """vault 不存在时给出明确指引并退出，而不是误报「密码错误」。"""
+    if not vault.path_exists():
+        print(f"Vault not found: {vault.path}")
+        print("Run 'sshm init' first.")
+        sys.exit(1)
+
+
 def get_vault_password(args, vault: Vault) -> str:
     """获取主密码：优先校验 Keychain 缓存，缓存缺失/失效则提示输入并写回缓存。
 
     会用 vault.load 校验候选密码——校验通过才返回/缓存，避免把误输的密码缓存下来。
     """
+    _require_vault(vault)
     if not args.no_cache:
         cached = load_password()
         if cached:
@@ -36,9 +46,13 @@ def get_vault_password(args, vault: Vault) -> str:
         password = get_password()
         try:
             vault.load(password)
-        except Exception:
+        except InvalidTag:
             print("密码错误，请重试。")
             continue
+        except Exception as e:
+            # 密码之外的失败（vault 损坏、版本过新等）：重试无意义
+            print(f"无法解锁 vault：{e}")
+            sys.exit(1)
         if not args.no_cache:
             store_password(password)
         return password
@@ -65,11 +79,17 @@ def cmd_add(args):
     vault = Vault(args.vault)
     password = get_vault_password(args, vault)
     print("Adding a new server:")
-    name = input("  Name: ")
-    host = input("  Host: ")
-    port_str = input("  Port [22]: ")
-    port = int(port_str) if port_str else 22
-    user = input("  User: ")
+    name = input("  Name: ").strip()
+    host = input("  Host: ").strip()
+    port_str = input("  Port [22]: ").strip()
+    port = 22
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            print(f"端口必须是数字，收到：{port_str!r}")
+            sys.exit(1)
+    user = input("  User: ").strip()
 
     # 重复检测：按 host:port:user 匹配
     servers = vault.list_servers(password)
@@ -81,7 +101,7 @@ def cmd_add(args):
             print("Cancelled.")
             return
 
-    auth_type = input("  Auth type (key/password): ")
+    auth_type = input("  Auth type (key/password): ").strip()
     key_path = None
     pwd = None
     if auth_type == "key":
@@ -90,12 +110,16 @@ def cmd_add(args):
         pwd = get_password("  Server password: ")
     group = input("  Group: ")
     notes = input("  Notes: ")
-    server = ServerConfig(
-        name=name, host=host, port=port, user=user,
-        auth_type=auth_type, key_path=key_path, password=pwd,
-        group=group, notes=notes,
-    )
-    vault.add_server(server, password)
+    try:
+        server = ServerConfig(
+            name=name, host=host, port=port, user=user,
+            auth_type=auth_type, key_path=key_path, password=pwd,
+            group=group, notes=notes,
+        )
+        vault.add_server(server, password)
+    except ValueError as e:
+        print(str(e))
+        sys.exit(1)
     print(f"Server '{name}' added.")
 
 
@@ -148,10 +172,14 @@ def cmd_edit(args):
 
     new_host = input(f"  Host [{server.host}]: ")
     if new_host:
-        updates["host"] = new_host
-    new_port = input(f"  Port [{server.port}]: ")
+        updates["host"] = new_host.strip()
+    new_port = input(f"  Port [{server.port}]: ").strip()
     if new_port:
-        updates["port"] = int(new_port)
+        try:
+            updates["port"] = int(new_port)
+        except ValueError:
+            print(f"端口必须是数字，收到：{new_port!r}")
+            sys.exit(1)
     new_user = input(f"  User [{server.user}]: ")
     if new_user:
         updates["user"] = new_user
@@ -187,7 +215,11 @@ def cmd_edit(args):
         updates["notes"] = new_notes
 
     if updates:
-        vault.edit_server(server.name, updates, master)  # type: ignore[arg-type]
+        try:
+            vault.edit_server(server.name, updates, master)  # type: ignore[arg-type]
+        except ValueError as e:
+            print(str(e))
+            sys.exit(1)
         print(f"Server '{server.name}' updated.")
     else:
         print("No changes.")
@@ -224,6 +256,7 @@ def cmd_download(args):
 def cmd_password(args):
     """处理 password 命令（修改主密码）。"""
     vault = Vault(args.vault)
+    _require_vault(vault)
     old_password = get_password("Current master password: ")
     try:
         data = vault.load(old_password)
@@ -301,25 +334,8 @@ def cmd_import(args):
 
 
 def _format_last_connected(ts: str | None) -> str:
-    """将 ISO 时间戳格式化为可读的相对时间或短日期。"""
-    if not ts:
-        return "-"
-    try:
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(ts)
-        now = datetime.now(timezone.utc)
-        diff = (now - dt.replace(tzinfo=timezone.utc)).total_seconds()
-        if diff < 60:
-            return "just now"
-        if diff < 3600:
-            return f"{int(diff // 60)}m ago"
-        if diff < 86400:
-            return f"{int(diff // 3600)}h ago"
-        if diff < 604800:
-            return f"{int(diff // 86400)}d ago"
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        return "-"
+    """兼容层：转发到 sshm.format（CLI 与 TUI 共用的展示逻辑）。"""
+    return format_last_connected(ts)
 
 
 def _detect_is_dark() -> bool:
@@ -337,16 +353,12 @@ def _detect_is_dark() -> bool:
 
 
 def _find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfig:
-    """按名称或序号查找服务器。"""
-    if name_or_index.isdigit():
-        idx = int(name_or_index) - 1
-        if 0 <= idx < len(servers):
-            return servers[idx]
-    for s in servers:
-        if s.name == name_or_index:
-            return s
-    print(f"Server not found: {name_or_index}")
-    sys.exit(1)
+    """按名称或序号查找服务器（语义与 vault.find_server 一致）。"""
+    server = find_server(servers, name_or_index)
+    if server is None:
+        print(f"Server not found: {name_or_index}")
+        sys.exit(1)
+    return server
 
 
 def run_tui():
@@ -360,6 +372,8 @@ def run_tui():
     parser = build_parser()
     args, _ = parser.parse_known_args()
     vault_path = getattr(args, "vault", "~/.sshm/vault.enc")
+    # TUI 没法优雅处理「vault 不存在」——在进入前给出明确指引
+    _require_vault(Vault(vault_path))
 
     theme = getattr(args, "theme", "system")
     app = SSHManagerApp(

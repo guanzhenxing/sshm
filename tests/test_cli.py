@@ -159,10 +159,19 @@ class TestCLIParsing:
                     main()
             assert os.path.exists(vault_path)
 
-    def test_ls_no_vault_shows_error(self):
-        with patch("sys.argv", ["sshm", "ls", "--vault", "/nonexistent/vault.enc"]):
-            with pytest.raises(SystemExit):
+    def test_ls_no_vault_shows_error(self, capsys):
+        """vault 不存在 → 明确指引 + 退出码 1，而不是「密码错误」死循环或裸堆栈。
+
+        回归：此前 get_vault_password 用 except Exception 把 FileNotFoundError
+        也当成密码错误，未 init 的机器上 sshm ls 会无限重试。
+        """
+        with patch("sys.argv", ["sshm", "--vault", "/nonexistent/vault.enc", "ls"]):
+            with pytest.raises(SystemExit) as exc_info:
                 main()
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "Vault not found" in out
+        assert "sshm init" in out
 
     def test_lock_runs(self):
         with patch("sshm.cli.clear_password") as mock_clear:
@@ -339,3 +348,75 @@ class TestExportImport:
         assert "解密失败" in captured.out
         names = [s.name for s in self.vault.list_servers(MASTER_PW)]
         assert names == ["alpha"]
+
+
+class TestCmdValidation:
+    """add/edit 的用户输入校验：非法输入给友好错误 + 退出码 1，而非裸 traceback。
+
+    回归：此前 `int(port_str)`（add/edit）与 ServerConfig 校验错误都未捕获，
+    CLI 以 ValueError 堆栈崩溃。
+    """
+
+    def _run(self, argv, inputs, master_inputs=()):
+        with patch("sshm.cli.get_vault_password", return_value=MASTER_PW), \
+             patch("sshm.cli.get_password", side_effect=list(master_inputs)), \
+             patch("builtins.input", side_effect=inputs), \
+             patch("sys.argv", argv):
+            main()
+
+    def test_add_invalid_port_friendly_error(self, fresh_vault, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(
+                ["sshm", "--vault", fresh_vault.path, "add"],
+                inputs=["beta", "1.2.3.4", "oops"],
+            )
+        assert exc_info.value.code == 1
+        assert "端口" in capsys.readouterr().out
+        assert fresh_vault.list_servers(MASTER_PW) == []
+
+    def test_add_invalid_auth_type_friendly_error(self, fresh_vault, capsys):
+        # 输入顺序：Name, Host, Port, User, Auth("token"), Group, Notes
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(
+                ["sshm", "--vault", fresh_vault.path, "add"],
+                inputs=["beta", "1.2.3.4", "", "u", "token", "", ""],
+                master_inputs=["server-pw"],
+            )
+        assert exc_info.value.code == 1
+        assert "invalid auth_type" in capsys.readouterr().out
+        assert fresh_vault.list_servers(MASTER_PW) == []
+
+    def test_add_duplicate_name_friendly_error(self, fresh_vault, capsys):
+        """重名服务器（vault 现在强制 name 唯一）→ 友好错误、不落盘。"""
+        fresh_vault.add_server(
+            ServerConfig(name="alpha", host="1.1.1.1", user="root",
+                         auth_type="key", key_path="/k"),
+            MASTER_PW,
+        )
+        # 输入顺序：Name(重名), Host, Port, User, Auth(key), Key path, Group, Notes
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(
+                ["sshm", "--vault", fresh_vault.path, "add"],
+                inputs=["alpha", "2.2.2.2", "", "u2", "key", "/k2", "", ""],
+            )
+        assert exc_info.value.code == 1
+        assert "already exists" in capsys.readouterr().out
+        assert [s.name for s in fresh_vault.list_servers(MASTER_PW)] == ["alpha"]
+
+    def test_edit_invalid_port_friendly_error(self, fresh_vault, capsys):
+        fresh_vault.add_server(
+            ServerConfig(name="srv", host="1.1.1.1", user="root",
+                         auth_type="key", key_path="/k"),
+            MASTER_PW,
+        )
+        # 输入顺序：Host(回车保留), Port(非法 "xx")
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(
+                ["sshm", "--vault", fresh_vault.path, "edit", "srv"],
+                inputs=["", "xx"],
+            )
+        assert exc_info.value.code == 1
+        assert "端口" in capsys.readouterr().out
+        # 原配置未受影响
+        servers = fresh_vault.list_servers(MASTER_PW)
+        assert servers[0].port == 22
