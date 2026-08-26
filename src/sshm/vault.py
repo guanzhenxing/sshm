@@ -1,5 +1,6 @@
 """Vault 数据管理 — ServerConfig 数据类 + Vault 文件读写。"""
 
+import copy
 import fcntl
 import json
 import os
@@ -55,6 +56,7 @@ class ServerConfig:
 @dataclass
 class MergeReport:
     """merge_servers 的合并结果摘要。"""
+
     added: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     overwritten: list[str] = field(default_factory=list)
@@ -69,6 +71,27 @@ class MergeReport:
         )
 
 
+def find_server_index(names: list[str], name_or_index: str) -> int | None:
+    """在 names 里按序号（1 起，列表顺序）或名称查找；未命中返回 None。
+
+    CLI（`sshm connect 3`）与 vault 内部（`edit 3`）共用这一套查找语义。
+    """
+    if name_or_index.isdigit():
+        idx = int(name_or_index) - 1
+        if 0 <= idx < len(names):
+            return idx
+    try:
+        return names.index(name_or_index)
+    except ValueError:
+        return None
+
+
+def find_server(servers: list[ServerConfig], name_or_index: str) -> ServerConfig | None:
+    """按名称或序号（1 起，vault 顺序）查找服务器；未命中返回 None。"""
+    idx = find_server_index([s.name for s in servers], name_or_index)
+    return None if idx is None else servers[idx]
+
+
 VAULT_VERSION = 1
 
 DEFAULT_VAULT_PATH = os.path.expanduser("~/.sshm/vault.enc")
@@ -79,6 +102,11 @@ class Vault:
 
     def __init__(self, path: str = DEFAULT_VAULT_PATH):
         self.path = os.path.expanduser(path)
+        # 解密结果缓存：同一密码且文件 stat 未变时复用，避免一条 CLI 命令里
+        # 「校验 + 载入」各做一次 600k 轮 PBKDF2（约多花 0.3-0.5s）。
+        # 任何写操作后 stat 变化，缓存自然失效。
+        self._cache: dict | None = None
+        self._cache_key: tuple | None = None
 
     def path_exists(self) -> bool:
         """vault 文件是否存在。"""
@@ -94,24 +122,58 @@ class Vault:
         with open(self.path, "wb") as f:
             f.write(encrypted)
 
-    def load(self, password: str) -> dict:
-        """加载并解密 vault。"""
-        if not os.path.exists(self.path):
-            raise FileNotFoundError(f"Vault not found: {self.path}")
-        with open(self.path, "rb") as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            data = f.read()
-            fcntl.flock(f, fcntl.LOCK_UN)
+    @staticmethod
+    def _decode(data: bytes, password: str) -> dict:
+        """解密 + JSON 解析 + 版本校验。"""
         plaintext = decrypt(data, password)
         result = json.loads(plaintext.decode("utf-8"))
         if result.get("version", 0) > VAULT_VERSION:
             raise ValueError("Vault version is newer than this tool supports. Please update sshm.")
         return result
 
+    def _stat_key(self) -> tuple | None:
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    def _refresh_cache(self, data: dict, password: str, stat_key: tuple | None = None) -> None:
+        key = stat_key if stat_key is not None else self._stat_key()
+        if key is None:
+            self._cache = None
+            self._cache_key = None
+            return
+        self._cache = data
+        self._cache_key = (key, password)
+
+    def load(self, password: str) -> dict:
+        """加载并解密 vault。
+
+        返回深拷贝——调用方（add/edit/merge 前置读取等）可能原地修改返回值，
+        不能波及缓存或后续 load 的结果。
+        """
+        stat_key = self._stat_key()
+        if stat_key is None:
+            self._cache = None
+            self._cache_key = None
+            raise FileNotFoundError(f"Vault not found: {self.path}")
+        if self._cache is not None and self._cache_key == (stat_key, password):
+            return copy.deepcopy(self._cache)
+        with open(self.path, "rb") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = f.read()
+            fcntl.flock(f, fcntl.LOCK_UN)
+        result = self._decode(data, password)
+        self._refresh_cache(result, password, stat_key)
+        return copy.deepcopy(result)
+
     def save(self, data: dict, password: str) -> None:
-        """加密并写入 vault（排他锁）。"""
+        """加密并写入 vault（排他锁）。整份重加密（如修改主密码）用这个入口。"""
         plaintext = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         encrypted = encrypt(plaintext, password)
+        self._cache = None
+        self._cache_key = None
         with open(self.path, "r+b") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.seek(0)
@@ -121,38 +183,72 @@ class Vault:
             os.fsync(f.fileno())
             fcntl.flock(f, fcntl.LOCK_UN)
 
+    def _mutate(self, password: str, fn):
+        """在单把排他锁内完成 解密 → fn(data) → 加密写盘，返回 fn 的返回值。
+
+        load 与 save 分两次加锁的写法在读-改-写窗口内不加锁，并发实例会丢
+        更新（后写覆盖先写）；这里全程持 LOCK_EX，读-改-写原子。fn 抛异常
+        则不落盘。
+        """
+        with open(self.path, "r+b") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                data = self._decode(f.read(), password)
+                result = fn(data)
+                plaintext = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+                encrypted = encrypt(plaintext, password)
+                f.seek(0)
+                f.truncate()
+                f.write(encrypted)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        self._refresh_cache(data, password)
+        return result
+
     def list_servers(self, password: str) -> list[ServerConfig]:
         data = self.load(password)
         return [ServerConfig.from_dict(s) for s in data.get("servers", [])]
 
     def add_server(self, server: ServerConfig, password: str) -> None:
-        data = self.load(password)
-        data["servers"].append(server.to_dict())
-        self.save(data, password)
+        def _add(data: dict) -> None:
+            if any(s["name"] == server.name for s in data.get("servers", [])):
+                raise ValueError(f"Server '{server.name}' already exists")
+            data["servers"].append(server.to_dict())
 
-    def _find_server_index(self, data: dict, name_or_index: str) -> int:
-        servers = data.get("servers", [])
-        if name_or_index.isdigit():
-            idx = int(name_or_index) - 1
-            if 0 <= idx < len(servers):
-                return idx
-        for i, s in enumerate(servers):
-            if s["name"] == name_or_index:
-                return i
-        raise ValueError(f"Server not found: {name_or_index}")
+        self._mutate(password, _add)
+
+    @staticmethod
+    def _find_server_index(data: dict, name_or_index: str) -> int:
+        idx = find_server_index(
+            [s["name"] for s in data.get("servers", [])], name_or_index,
+        )
+        if idx is None:
+            raise ValueError(f"Server not found: {name_or_index}")
+        return idx
 
     def remove_server(self, name_or_index: str, password: str) -> None:
-        data = self.load(password)
-        idx = self._find_server_index(data, name_or_index)
-        data["servers"].pop(idx)
-        self.save(data, password)
+        def _remove(data: dict) -> None:
+            idx = self._find_server_index(data, name_or_index)
+            data["servers"].pop(idx)
+
+        self._mutate(password, _remove)
 
     def edit_server(self, name_or_index: str, updates: dict, password: str) -> None:
-        data = self.load(password)
-        idx = self._find_server_index(data, name_or_index)
-        data["servers"][idx].update(updates)
-        ServerConfig.from_dict(data["servers"][idx])
-        self.save(data, password)
+        """原位更新指定服务器的字段（保持列表位置、保留未提及的字段）。"""
+
+        def _edit(data: dict) -> None:
+            idx = self._find_server_index(data, name_or_index)
+            servers = data["servers"]
+            new_name = updates.get("name", servers[idx]["name"])
+            if any(i != idx and s["name"] == new_name for i, s in enumerate(servers)):
+                raise ValueError(f"Server '{new_name}' already exists")
+            servers[idx].update(updates)
+            ServerConfig.from_dict(servers[idx])  # 整体校验，非法则不落盘
+
+        self._mutate(password, _edit)
 
     def record_last_connected(self, name: str, password: str) -> None:
         """记录服务器最后连接时间。静默失败——不影响主流程。"""
@@ -178,40 +274,9 @@ class Vault:
         """
         if strategy not in ("skip", "overwrite", "rename"):
             raise ValueError(f"未知合并策略：{strategy}")
-        data = self.load(password)
-        final: list[dict] = list(data.get("servers", []))
-        by_name: dict[str, dict] = {s["name"]: s for s in final}
-        report = MergeReport(total_in=len(incoming))
-
-        for inc in incoming:
-            inc_d = inc.to_dict()
-            name = inc_d["name"]
-            if name not in by_name:
-                final.append(inc_d)
-                by_name[name] = inc_d
-                report.added.append(name)
-                continue
-
-            if strategy == "skip":
-                report.skipped.append(name)
-            elif strategy == "overwrite":
-                for i, s in enumerate(final):
-                    if s["name"] == name:
-                        final[i] = inc_d
-                        break
-                by_name[name] = inc_d
-                report.overwritten.append(name)
-            elif strategy == "rename":
-                new_name = self._next_available_name(name, by_name)
-                inc_d["name"] = new_name
-                final.append(inc_d)
-                by_name[new_name] = inc_d
-                report.renamed.append((name, new_name))
-
-        if not dry_run:
-            data["servers"] = final
-            self.save(data, password)
-        return report
+        if dry_run:
+            return _merge_into(self.load(password), incoming, strategy)
+        return self._mutate(password, lambda data: _merge_into(data, incoming, strategy))
 
     @staticmethod
     def _next_available_name(name: str, by_name: dict[str, dict]) -> str:
@@ -220,3 +285,38 @@ class Vault:
         while f"{name}-{i}" in by_name:
             i += 1
         return f"{name}-{i}"
+
+
+def _merge_into(data: dict, incoming: list[ServerConfig], strategy: str) -> MergeReport:
+    """把 incoming 按策略合并进 data（原地修改 data["servers"]），返回报告。"""
+    final: list[dict] = list(data.get("servers", []))
+    by_name: dict[str, dict] = {s["name"]: s for s in final}
+    report = MergeReport(total_in=len(incoming))
+
+    for inc in incoming:
+        inc_d = inc.to_dict()
+        name = inc_d["name"]
+        if name not in by_name:
+            final.append(inc_d)
+            by_name[name] = inc_d
+            report.added.append(name)
+            continue
+
+        if strategy == "skip":
+            report.skipped.append(name)
+        elif strategy == "overwrite":
+            for i, s in enumerate(final):
+                if s["name"] == name:
+                    final[i] = inc_d
+                    break
+            by_name[name] = inc_d
+            report.overwritten.append(name)
+        elif strategy == "rename":
+            new_name = Vault._next_available_name(name, by_name)
+            inc_d["name"] = new_name
+            final.append(inc_d)
+            by_name[new_name] = inc_d
+            report.renamed.append((name, new_name))
+
+    data["servers"] = final
+    return report

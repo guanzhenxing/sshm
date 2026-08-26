@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from unittest.mock import patch
 
 import pytest
 from cryptography.exceptions import InvalidTag
@@ -284,3 +285,110 @@ class TestMergeServers:
             self.vault.merge_servers(
                 self._import_list(["beta"]), "bogus", self.password,
             )
+
+
+class TestVaultUniqueness:
+    """name 是唯一业务键（导入去重、CLI/TUI 查找都按 name），落盘层强制唯一。"""
+
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.vault_path = os.path.join(self.tmpdir, "vault.enc")
+        self.vault = Vault(self.vault_path)
+        self.password = "test-master-password"
+        self.vault.init(self.password)
+
+    @staticmethod
+    def _server(name: str, **kw) -> ServerConfig:
+        params = dict(
+            name=name, host="1.2.3.4", user="root",
+            auth_type="password", password="x",
+        )
+        params.update(kw)
+        return ServerConfig(**params)
+
+    def test_add_duplicate_name_rejected_and_not_persisted(self):
+        self.vault.add_server(self._server("dup"), self.password)
+        with pytest.raises(ValueError, match="already exists"):
+            self.vault.add_server(self._server("dup", host="5.6.7.8"), self.password)
+        servers = self.vault.list_servers(self.password)
+        assert len(servers) == 1
+        assert servers[0].host == "1.2.3.4"  # 被拒的那台没有写入
+
+    def test_edit_rename_onto_existing_name_rejected(self):
+        self.vault.add_server(self._server("a"), self.password)
+        self.vault.add_server(self._server("b"), self.password)
+        with pytest.raises(ValueError, match="already exists"):
+            self.vault.edit_server("a", {"name": "b"}, self.password)
+        assert [s.name for s in self.vault.list_servers(self.password)] == ["a", "b"]
+
+    def test_edit_keeps_own_name_allowed(self):
+        """updates 带上原 name（TUI 编辑整表单提交）不应误判为重名。"""
+        self.vault.add_server(self._server("solo"), self.password)
+        self.vault.edit_server("solo", {"name": "solo", "host": "9.9.9.9"}, self.password)
+        servers = self.vault.list_servers(self.password)
+        assert servers[0].host == "9.9.9.9"
+
+    def test_edit_preserves_position_and_last_connected(self):
+        """原位更新：不移动列表位置、不丢 last_connected。
+
+        回归：TUI 编辑此前用 remove+add 实现，条目被挪到末尾、
+        last_connected（表单不采集）被清空。
+        """
+        self.vault.add_server(self._server("a"), self.password)
+        self.vault.add_server(self._server("b"), self.password)
+        self.vault.record_last_connected("a", self.password)
+        self.vault.edit_server("a", {"host": "9.9.9.9"}, self.password)
+        servers = self.vault.list_servers(self.password)
+        assert [s.name for s in servers] == ["a", "b"]
+        assert servers[0].host == "9.9.9.9"
+        assert servers[0].last_connected is not None
+
+
+class TestVaultLoadCache:
+    """load 的解密缓存：同一密码 + 文件未变时省掉重复 PBKDF2（600k 轮约 0.3s）。"""
+
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.vault_path = os.path.join(self.tmpdir, "vault.enc")
+        self.vault = Vault(self.vault_path)
+        self.password = "test-master-password"
+        self.vault.init(self.password)
+
+    def test_repeat_load_decrypts_once(self):
+        import sshm.vault as vault_mod
+        real_decrypt = vault_mod.decrypt
+        calls = []
+
+        def counting(data, password):
+            calls.append(1)
+            return real_decrypt(data, password)
+
+        with patch("sshm.vault.decrypt", side_effect=counting):
+            self.vault.load(self.password)
+            self.vault.load(self.password)
+        assert len(calls) == 1
+
+    def test_cache_returns_independent_copies(self):
+        """缓存命中也返回深拷贝——调用方原地修改返回值不污染缓存。"""
+        d1 = self.vault.load(self.password)
+        d2 = self.vault.load(self.password)
+        assert d1 == d2
+        assert d1 is not d2
+        d1["servers"].append({"name": "ghost"})
+        assert self.vault.load(self.password)["servers"] == []
+
+    def test_wrong_password_bypasses_cache(self):
+        """缓存按密码区分：先用正确密码载入，再用错误密码 load 仍应报 InvalidTag。"""
+        self.vault.load(self.password)
+        with pytest.raises(InvalidTag):
+            self.vault.load("wrong-password")
+
+    def test_write_invalidates_cache(self):
+        self.vault.load(self.password)
+        self.vault.add_server(
+            ServerConfig(name="s1", host="1.2.3.4", user="root",
+                         auth_type="password", password="x"),
+            self.password,
+        )
+        names = [s.name for s in self.vault.list_servers(self.password)]
+        assert names == ["s1"]
