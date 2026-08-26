@@ -15,9 +15,13 @@ class TestStorePassword:
         mock_run.assert_called_once()
         args = mock_run.call_args
         assert "add-generic-password" in args[0][0]
-        payload = json.loads(args[1]["input"].decode("utf-8"))
+        # security CLI 经 -w 的 argv 传值（不支持 stdin），payload 在 -w 后面
+        cmd = args[0][0]
+        payload = json.loads(cmd[cmd.index("-w") + 1])
         assert payload["password"] == "my-master-password"
         assert payload["expires_at"] > time.time()
+        # 不再传无效的 input=（-w 带值时 stdin 不会被读取）
+        assert "input" not in args[1]
 
 
 class TestLoadPassword:

@@ -16,7 +16,12 @@ ACCOUNT_NAME = "sshm"
 
 
 def store_password(password: str, ttl: int = DEFAULT_TTL) -> None:
-    """将主密码缓存到 macOS Keychain，带 TTL。"""
+    """将主密码缓存到 macOS Keychain，带 TTL。
+
+    security CLI 只支持经 argv（-w）传值，主密码会短暂出现在进程列表里；
+    本工具的威胁模型是「本地同用户」——同用户本就免认证读 Keychain，
+    故与缓存本身等价，可接受。stdin 不被 -w 带值时读取，勿再传 input。
+    """
     payload = json.dumps({"password": password, "expires_at": time.time() + ttl})
     subprocess.run(
         [
@@ -24,7 +29,6 @@ def store_password(password: str, ttl: int = DEFAULT_TTL) -> None:
             "-a", ACCOUNT_NAME, "-s", SERVICE_NAME,
             "-w", payload, "-U",
         ],
-        input=payload.encode("utf-8"),
         check=True,
     )
 
